@@ -57,6 +57,14 @@ public final class Storage implements AutoCloseable {
         c.setUsername(user);
         c.setPassword(password);
         c.setMaximumPoolSize(2);
+        // HikariCP's recommended MySQL settings (statement/metadata caching), minus server-side prepared statements.
+        c.addDataSourceProperty("cachePrepStmts", "true");
+        c.addDataSourceProperty("prepStmtCacheSize", "250");
+        c.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+        c.addDataSourceProperty("useLocalSessionState", "true");
+        c.addDataSourceProperty("cacheResultSetMetadata", "true");
+        c.addDataSourceProperty("cacheServerConfiguration", "true");
+        c.addDataSourceProperty("maintainTimeStats", "false");
         return new Storage(c, true);
     }
 

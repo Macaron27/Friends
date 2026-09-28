@@ -20,3 +20,17 @@ request-expiry-minutes: 5
 
 # Maximum friends per player (Hypixel: 5000).
 max-friends: 5000
+
+# Several proxies (multi-proxy network): share who is online, friend requests and notifications through Redis.
+# Needs storage.type: mysql, with every proxy using the same database.
+redis:
+  enabled: false
+  host: localhost
+  port: 6379
+  password: ""
+  database: 0
+  ssl: false
+  # Unique per proxy, stable across restarts (e.g. "proxy-1"). Empty = a random id on every start.
+  proxy-id: ""
+  # Prefix for keys and the pub/sub channel, so several networks can share one Redis.
+  namespace: friends

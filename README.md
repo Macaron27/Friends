@@ -11,8 +11,8 @@ Modules:
 ## Build
 
 ```bash
-./gradlew :velocity:shadowJar   # -> velocity/build/libs/friends-velocity-0.2.0.jar
-./gradlew :common:test         # SQLite; add -Dfriends.mysql=host:port/db:user:password to also run on MySQL
+./gradlew :velocity:shadowJar   # -> velocity/build/libs/friends-velocity-0.3.0.jar
+./gradlew :common:test         # see "Tests" below for the MySQL and Redis suites
 ```
 
 Drop the jar in Velocity's `plugins/` folder. Velocity 4.2 itself needs Java 25. sqlite-jdbc loads a native
@@ -40,14 +40,34 @@ Permission: `friends.use` — allowed unless explicitly set to false (Velocity h
 ## Config (`plugins/friends/config.yml`)
 
 `storage.type` `sqlite` (single proxy) or `mysql` (MySQL/MariaDB), `request-expiry-minutes` (default 5),
-`max-friends` (default 5000).
+`max-friends` (default 5000), and the `redis` section for multi-proxy networks.
+
+## Multiple proxies
+
+Set `storage.type: mysql` on every proxy (same database), then `redis.enabled: true` with a unique, stable
+`redis.proxy-id` per proxy. Friends then work across proxies: requests, accept/deny, join/leave messages,
+online status, current server, `/f list` and tab-completion all see the whole network.
+
+- Redis holds only short-lived shared state: who is online where (`<ns>:online`), pending requests (one key
+  each, expiring with the request), a heartbeat per proxy and one pub/sub channel. MySQL stays the source of truth.
+- A proxy that stops heartbeating (crash, freeze) is reaped by the others after ~30-40 s and its players are shown
+  offline. A restarted proxy clears what its previous run left behind.
+- After a Redis reconnect every proxy re-reads the shared state and re-announces its own players.
 
 ## How it works
 
 - Each online player's friends and settings are loaded with one query at login and kept in memory, so
   lists, notifications and tab-completion never hit the database.
-- Writes update the cache immediately and run on a single ordered database thread, never on proxy threads.
-- Friend requests live in memory (they expire after minutes) and are lost on proxy restart.
-- Single proxy only: multiple Velocity instances would need a shared cache/pub-sub (e.g. Redis).
+- Every change is an event: applied under one lock (cache + queued SQL write together, so they can't drift), then
+  published through the SQL queue, so other proxies only see a change once it is stored.
+- Writes run on a single ordered database thread per proxy, never on proxy threads.
+- Friend requests live in memory (plus Redis when enabled) and expire after minutes; they are not kept in SQL.
 - Tables are `friends_players` and `friends_friendships`. Data from the old Bungee/Paper tables
   (`players`, `friends`, `requests`, `settings`) is not migrated.
+
+## Tests
+
+`./gradlew :common:test` runs everything that needs no services (SQLite, in-memory multi-proxy, randomized
+cache-vs-database checks with a deliberately slow database, a concurrency stress test). Add
+`-Dfriends.mysql=host:port/db:user:password` and/or `-Dfriends.redis=host:port` to also run the MySQL and
+real-Redis suites (they use throwaway tables/key namespaces).
