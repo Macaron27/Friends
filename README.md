@@ -11,8 +11,8 @@ Modules:
 ## Build
 
 ```bash
-gradle :velocity:shadowJar   # -> velocity/build/libs/friends-velocity-0.2.0.jar
-gradle :common:test          # SQLite; add -Dfriends.mysql=host:port/db:user:password to also run on MySQL
+./gradlew :velocity:shadowJar   # -> velocity/build/libs/friends-velocity-0.2.0.jar
+./gradlew :common:test         # SQLite; add -Dfriends.mysql=host:port/db:user:password to also run on MySQL
 ```
 
 Drop the jar in Velocity's `plugins/` folder. Velocity 4.2 itself needs Java 25. sqlite-jdbc loads a native
