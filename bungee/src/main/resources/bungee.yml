@@ -1,0 +1,5 @@
+name: Friends
+main: com.friends.bungee.FriendsBungee
+version: ${version}
+description: Hypixel-style friends system
+softDepends: [LuckPerms]

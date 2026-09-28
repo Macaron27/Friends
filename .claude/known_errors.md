@@ -33,3 +33,18 @@
 - **Jedis 8:** `JedisPooled` → `RedisClient.builder()`; `ssl(boolean)` is deprecated → `sslOptions(SslOptions.defaults())`.
 - **GitHub Actions YAML:** an unquoted `run:` containing `: ` (e.g. `...:root: -D...`) is parsed as a mapping and the
   whole workflow is rejected (run with 0 jobs, named after the file path). Quote such commands.
+- **Bukkit loads the server's libraries first:** Paper 1.8.8 bundles sqlite-jdbc 3.7.2 (1.12.2: 3.21.0.1), so our
+  SQLite SQL must avoid UPSERT/TRUE/FALSE, set `connectionTestQuery`, and bind booleans with `setBoolean`. The
+  `testSqlite3_7_2` / `testSqlite3_21_0_1` tasks run the suites on those drivers. 3.7.2 rejects `journal_mode` as a
+  connection property (it returns a row): use `connectionInitSql`. 3.21.0.1 has no Apple Silicon native.
+- **CraftBukkit's class rewriter (Commodore, 1.13+) can't read Java 25 classes before ~1.21:** "Fatal error trying to
+  convert" per class. Fix: Java 8 bootstrap plugin + embedded implementation jar loaded by a child URLClassLoader.
+- **Paper 1.16.5 refuses Java > 16** at startup: `-DPaper.IgnoreJavaVersion=true` (it runs fine on Java 25).
+- **bungeecord-chat:** `ChatColor` stopped being an enum (compile against 1.8, never `switch` on it);
+  `ComponentSerializer` moved to `bungeecord-serializer`; `ChatColor.of` (hex) only on 1.16+.
+- **Hot-path messages:** MiniMessage parsing costs ~4 µs per message; join/leave notices go to every online friend,
+  so build them from prebuilt components (~20 ns) and cache fixed messages.
+- **Gradle:** `project.version` inside `filesMatching { expand(...) }` is Task.project at execution time
+  (deprecated, breaks the configuration cache) — capture it during configuration.
+- **E2E bot protocol ids:** minecraft-data lacks 26.2/26.3; minecraft.wiki's protocol page documents the latest
+  (26.3 = 777; known packs moved 0x0E -> 0x0F, play ids shifted). Paper 26.x enables the whitelist by default.

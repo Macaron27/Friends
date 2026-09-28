@@ -88,40 +88,49 @@ final class Messages {
 
     // --- command replies ---
 
+    // Fixed messages are built once (MiniMessage parsing costs microseconds per call).
+    private static final Component HELP = box(
+            mm("<green>Friend Commands:"),
+            mm("<yellow>/f add \\<player> <gray>- <aqua>Send a friend request"),
+            mm("<yellow>/f accept \\<player> <gray>- <aqua>Accept a friend request"),
+            mm("<yellow>/f deny \\<player> <gray>- <aqua>Decline a friend request"),
+            mm("<yellow>/f list [best] [page] <gray>- <aqua>List your friends"),
+            mm("<yellow>/f requests <gray>- <aqua>View pending friend requests"),
+            mm("<yellow>/f remove \\<player> <gray>- <aqua>Remove a friend"),
+            mm("<yellow>/f best \\<player> <gray>- <aqua>Toggle best friend"),
+            mm("<yellow>/f nickname \\<player> [nickname] <gray>- <aqua>Set a nickname only you can see"),
+            mm("<yellow>/f removeall <gray>- <aqua>Remove all friends except best friends"),
+            mm("<yellow>/f notifications <gray>- <aqua>Toggle friend join/leave messages"),
+            mm("<yellow>/status [online|away|busy|offline] <gray>- <aqua>Set your online status"));
+
     static Component help() {
-        return box(
-                mm("<green>Friend Commands:"),
-                mm("<yellow>/f add \\<player> <gray>- <aqua>Send a friend request"),
-                mm("<yellow>/f accept \\<player> <gray>- <aqua>Accept a friend request"),
-                mm("<yellow>/f deny \\<player> <gray>- <aqua>Decline a friend request"),
-                mm("<yellow>/f list [best] [page] <gray>- <aqua>List your friends"),
-                mm("<yellow>/f requests <gray>- <aqua>View pending friend requests"),
-                mm("<yellow>/f remove \\<player> <gray>- <aqua>Remove a friend"),
-                mm("<yellow>/f best \\<player> <gray>- <aqua>Toggle best friend"),
-                mm("<yellow>/f nickname \\<player> [nickname] <gray>- <aqua>Set a nickname only you can see"),
-                mm("<yellow>/f removeall <gray>- <aqua>Remove all friends except best friends"),
-                mm("<yellow>/f notifications <gray>- <aqua>Toggle friend join/leave messages"),
-                mm("<yellow>/status [online|away|busy|offline] <gray>- <aqua>Set your online status"));
+        return HELP;
     }
 
     static Component usage(String usage) {
         return box(mm("<red>Usage: <usage>", Placeholder.unparsed("usage", usage)));
     }
 
+    private static final Component ERROR = box(mm("<red>Something went wrong, please try again later."));
+
     static Component error() {
-        return box(mm("<red>Something went wrong, please try again later."));
+        return ERROR;
     }
 
+    private static final Component NOT_LOADED = box(mm("<red>Your friends data isn't loaded yet, please try again in a moment."));
+
     static Component notLoaded() {
-        return box(mm("<red>Your friends data isn't loaded yet, please try again in a moment."));
+        return NOT_LOADED;
     }
 
     static Component notFound(String input) {
         return box(mm("<red>Can't find a player by the name of '<name>'", Placeholder.unparsed("name", input)));
     }
 
+    private static final Component ADD_SELF = box(mm("<red>You can't add yourself as a friend!"));
+
     static Component addSelf() {
-        return box(mm("<red>You can't add yourself as a friend!"));
+        return ADD_SELF;
     }
 
     static Component alreadyFriends(Component p) {
@@ -194,8 +203,10 @@ final class Messages {
                 : mm("<green>You'll now see <player> <green>as <yellow><nick><green>.", player(p), Placeholder.unparsed("nick", nickname)));
     }
 
+    private static final Component INVALID_NICKNAME = box(mm("<red>Nicknames must be 1-16 letters, digits, spaces or underscores."));
+
     static Component invalidNickname() {
-        return box(mm("<red>Nicknames must be 1-16 letters, digits, spaces or underscores."));
+        return INVALID_NICKNAME;
     }
 
     static Component removeAllConfirm(int count) {
@@ -209,8 +220,10 @@ final class Messages {
         return box(mm("<yellow>Removed <count> friends from your friends list.", Placeholder.unparsed("count", Integer.toString(count))));
     }
 
+    private static final Component NOTHING_TO_REMOVE = box(mm("<yellow>You don't have any friends to remove (best friends are kept)."));
+
     static Component nothingToRemove() {
-        return box(mm("<yellow>You don't have any friends to remove (best friends are kept)."));
+        return NOTHING_TO_REMOVE;
     }
 
     static Component notifications(boolean enabled) {
@@ -257,12 +270,19 @@ final class Messages {
 
     // --- notifications ---
 
+    // Sent to every online friend on each join/leave: plain builders, no parsing (same styling as
+    // "<green>Friend > <player> <yellow>joined.": the name inherits green unless it has its own colour).
+    private static final Component FRIEND_PREFIX = text("Friend > ");
+    private static final Component SPACE = text(" ");
+    private static final Component JOINED = text("joined.", YELLOW);
+    private static final Component LEFT = text("left.", YELLOW);
+
     static Component joined(Component p) {
-        return mm("<green>Friend > <player> <yellow>joined.", player(p));
+        return text().color(GREEN).append(FRIEND_PREFIX).append(p).append(SPACE).append(JOINED).build();
     }
 
     static Component left(Component p) {
-        return mm("<green>Friend > <player> <yellow>left.", player(p));
+        return text().color(GREEN).append(FRIEND_PREFIX).append(p).append(SPACE).append(LEFT).build();
     }
 
     static Component pending(long count) {
@@ -273,10 +293,11 @@ final class Messages {
 
     // --- lists ---
 
+    private static final Component NO_BEST_FRIENDS = box(mm("<yellow>You don't have any best friends yet! Use <aqua>/f best \\<player>"));
+    private static final Component NO_FRIENDS = box(mm("<yellow>You don't have any friends yet! Add some with <aqua>/f add \\<player>"));
+
     static Component noFriends(boolean best) {
-        return box(best
-                ? mm("<yellow>You don't have any best friends yet! Use <aqua>/f best \\<player>")
-                : mm("<yellow>You don't have any friends yet! Add some with <aqua>/f add \\<player>"));
+        return best ? NO_BEST_FRIENDS : NO_FRIENDS;
     }
 
     static Component list(List<Entry> entries, int page, int pages, boolean best, Instant now) {
@@ -312,8 +333,10 @@ final class Messages {
         return text().append(name).append(state).hoverEvent(HoverEvent.showText(hover.build())).build();
     }
 
+    private static final Component NO_REQUESTS = box(mm("<yellow>You don't have any pending friend requests."));
+
     static Component noRequests() {
-        return box(mm("<yellow>You don't have any pending friend requests."));
+        return NO_REQUESTS;
     }
 
     static Component requests(List<Request> incoming, List<Request> outgoing, Instant now) {

@@ -37,14 +37,29 @@ public final class Storage implements AutoCloseable {
         createTables();
     }
 
+    /**
+     * SQL here must run on SQLite 3.7.2 (the driver Paper 1.8.8 bundles, which Bukkit loads before ours): no UPSERT,
+     * no TRUE/FALSE literals, no JDBC4 isValid().
+     */
     public static Storage sqlite(Path file) throws SQLException {
         HikariConfig c = new HikariConfig();
         c.setPoolName("friends-sqlite");
         c.setDriverClassName("org.sqlite.JDBC");
         c.setJdbcUrl("jdbc:sqlite:" + file.toAbsolutePath());
         c.setMaximumPoolSize(1);
+        c.setConnectionTestQuery("SELECT 1");
+        // WAL + synchronous=NORMAL: one fsync per checkpoint instead of per commit, still crash-safe for the database.
+        // (journal_mode returns a row, which old drivers reject as a connection property, hence the init SQL.)
         c.setConnectionInitSql("PRAGMA journal_mode=WAL");
-        return new Storage(c, false);
+        c.addDataSourceProperty("synchronous", "NORMAL");
+        try {
+            return new Storage(c, false);
+        } catch (RuntimeException e) { // Hikari's "Error opening connection" hides the useful part
+            Throwable root = e;
+            while (root.getCause() != null) root = root.getCause();
+            throw new SQLException("SQLite could not open " + file + " (" + root.getMessage()
+                    + "). On old servers the bundled SQLite driver may not support this OS/CPU; use storage.type: mysql", e);
+        }
     }
 
     public static Storage mysql(String host, int port, String database, String user, String password, boolean ssl)
@@ -78,7 +93,7 @@ public final class Storage implements AutoCloseable {
                       name_lower VARCHAR(16) NOT NULL,
                       prefix TEXT,
                       last_seen BIGINT NOT NULL,
-                      notifications BOOLEAN NOT NULL DEFAULT TRUE,
+                      notifications BOOLEAN NOT NULL DEFAULT 1,
                       status VARCHAR(16) NOT NULL DEFAULT 'ONLINE'%s
                     )""".formatted(mysql ? ",\n  INDEX idx_friends_players_name (name_lower)" : ""));
             if (!mysql) {
@@ -89,7 +104,7 @@ public final class Storage implements AutoCloseable {
                       player CHAR(36) NOT NULL,
                       friend CHAR(36) NOT NULL,
                       since BIGINT NOT NULL,
-                      best BOOLEAN NOT NULL DEFAULT FALSE,
+                      best BOOLEAN NOT NULL DEFAULT 0,
                       nickname VARCHAR(16),
                       PRIMARY KEY (player, friend)
                     )""");
@@ -98,23 +113,41 @@ public final class Storage implements AutoCloseable {
 
     /** Upserts name/prefix and bumps last_seen; settings columns are left alone. */
     public void savePlayer(UUID id, String name, String prefix, Instant seen) throws SQLException {
-        String sql = mysql
-                ? """
-                  INSERT INTO friends_players (uuid, name, name_lower, prefix, last_seen) VALUES (?, ?, ?, ?, ?)
-                  ON DUPLICATE KEY UPDATE name = VALUES(name), name_lower = VALUES(name_lower),
-                    prefix = VALUES(prefix), last_seen = VALUES(last_seen)"""
-                : """
-                  INSERT INTO friends_players (uuid, name, name_lower, prefix, last_seen) VALUES (?, ?, ?, ?, ?)
-                  ON CONFLICT (uuid) DO UPDATE SET name = excluded.name, name_lower = excluded.name_lower,
-                    prefix = excluded.prefix, last_seen = excluded.last_seen""";
-        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
-            p.setString(1, id.toString());
-            p.setString(2, name);
-            p.setString(3, name.toLowerCase(Locale.ROOT));
-            p.setString(4, prefix);
-            p.setLong(5, seen.toEpochMilli());
-            p.executeUpdate();
+        if (mysql) {
+            try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement("""
+                    INSERT INTO friends_players (uuid, name, name_lower, prefix, last_seen) VALUES (?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE name = VALUES(name), name_lower = VALUES(name_lower),
+                      prefix = VALUES(prefix), last_seen = VALUES(last_seen)""")) {
+                bindPlayer(p, id, name, prefix, seen);
+                p.executeUpdate();
+            }
+            return;
         }
+        // SQLite < 3.24 has no UPSERT: update, and insert if nothing was there (one DB thread, so no race).
+        inTransaction(c -> {
+            try (PreparedStatement p = c.prepareStatement(
+                    "UPDATE friends_players SET name = ?, name_lower = ?, prefix = ?, last_seen = ? WHERE uuid = ?")) {
+                p.setString(1, name);
+                p.setString(2, name.toLowerCase(Locale.ROOT));
+                p.setString(3, prefix);
+                p.setLong(4, seen.toEpochMilli());
+                p.setString(5, id.toString());
+                if (p.executeUpdate() > 0) return;
+            }
+            try (PreparedStatement p = c.prepareStatement(
+                    "INSERT INTO friends_players (uuid, name, name_lower, prefix, last_seen) VALUES (?, ?, ?, ?, ?)")) {
+                bindPlayer(p, id, name, prefix, seen);
+                p.executeUpdate();
+            }
+        });
+    }
+
+    private static void bindPlayer(PreparedStatement p, UUID id, String name, String prefix, Instant seen) throws SQLException {
+        p.setString(1, id.toString());
+        p.setString(2, name);
+        p.setString(3, name.toLowerCase(Locale.ROOT));
+        p.setString(4, prefix);
+        p.setLong(5, seen.toEpochMilli());
     }
 
     public void touch(UUID id, Instant seen) throws SQLException {
@@ -232,8 +265,13 @@ public final class Storage implements AutoCloseable {
     private void update(String sql, Object... args) throws SQLException {
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(sql)) {
             for (int i = 0; i < args.length; i++) {
-                if (args[i] == null) p.setNull(i + 1, Types.VARCHAR);
-                else p.setObject(i + 1, args[i]);
+                switch (args[i]) { // typed setters: old sqlite-jdbc's setObject doesn't know Boolean
+                    case null -> p.setNull(i + 1, Types.VARCHAR);
+                    case Boolean b -> p.setBoolean(i + 1, b);
+                    case Long l -> p.setLong(i + 1, l);
+                    case String s -> p.setString(i + 1, s);
+                    default -> p.setObject(i + 1, args[i]);
+                }
             }
             p.executeUpdate();
         }

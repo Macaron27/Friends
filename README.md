@@ -1,22 +1,35 @@
-# Friends (Velocity)
+# Friends
 
-A Hypixel-style friends system for [Velocity](https://papermc.io/software/velocity) 4.2, built for Java 25.
+A Hypixel-style friends system for **Velocity**, **BungeeCord** and **Paper 1.8.8 → 26.3**, built for Java 25.
 
 Modules:
-- `common` — platform-agnostic core (rules, cache, storage, Adventure messages) + tests.
-- `velocity` — the Velocity plugin (thin glue: config, events, commands, optional LuckPerms prefixes).
-- `paper/`, `bungee/`, `bungee-api-stub/` — the old implementations. They still target the previous
-  `common` API and are **not part of the build** until they are ported.
+- `common` — platform-agnostic core (rules, cache, storage, messages, multi-proxy network) + tests.
+- `velocity`, `bungee` — proxy plugins (thin glue). Both support multi-proxy networks through Redis, even mixed.
+- `paper` — standalone Paper servers, one jar for 1.8.8 to 26.x.
+- `tools/e2e` — end-to-end tests on real servers with bot players.
 
 ## Build
 
 ```bash
-./gradlew :velocity:shadowJar   # -> velocity/build/libs/friends-velocity-0.3.0.jar
-./gradlew :common:test         # see "Tests" below for the MySQL and Redis suites
+./gradlew build   # tests + velocity/build/libs/friends-velocity-0.4.0.jar,
+                  #         bungee/build/libs/friends-bungee-0.4.0.jar, paper/build/libs/friends-paper-0.4.0.jar
 ```
 
-Drop the jar in Velocity's `plugins/` folder. Velocity 4.2 itself needs Java 25. sqlite-jdbc loads a native
-library, so add `--enable-native-access=ALL-UNNAMED` to the proxy's JVM flags to silence the JDK warning.
+Put the jar for your platform in `plugins/`. Every server/proxy must run **Java 25** (Velocity 4.2 and Paper 26.x
+require it anyway; older Paper versions run on it, see below). Add `--enable-native-access=ALL-UNNAMED` to the JVM
+flags to silence the JDK warning about SQLite's native library.
+
+## Compatibility (tested on real servers, see `tools/e2e`)
+
+| Platform | Tested | Notes |
+|---|---|---|
+| Paper 1.8.8, 1.12.2, 1.16.5, 1.20.6, 1.21.11, 26.3 | full friend flow with bot players | 1.16.5 needs `-DPaper.IgnoreJavaVersion=true` to start on Java 25 |
+| BungeeCord 26.1 (build 2100) | players on 1.8.8 and 26.3 backends | |
+| Velocity 4.2.0 | players on 1.8.8 and 26.3 backends | |
+| BungeeCord + Velocity sharing MySQL + Redis | cross-proxy friend flow | |
+
+Versions in between use the same APIs; they were not all run. On old Paper the plugin uses the server's own
+SQLite driver: Paper 1.12.2's has no Apple Silicon build (Linux x86_64/ARM are fine), use MySQL there.
 
 ## Commands
 
@@ -35,18 +48,19 @@ library, so add `--enable-native-access=ALL-UNNAMED` to the proxy's JVM flags to
 | `/f notifications` | Toggle "Friend > X joined./left." messages. |
 | `/status [online\|away\|busy\|offline]` | Status shown to friends; `offline` = appear offline (no join/leave messages). |
 
-Permission: `friends.use` — allowed unless explicitly set to false (Velocity has no permission defaults).
+Permission `friends.use`: on by default on Paper; on Velocity allowed unless explicitly false; BungeeCord has no
+permission check (no permission defaults there).
 
-## Config (`plugins/friends/config.yml`)
+## Config (`plugins/Friends/config.yml`, `plugins/friends/` on Velocity)
 
-`storage.type` `sqlite` (single proxy) or `mysql` (MySQL/MariaDB), `request-expiry-minutes` (default 5),
-`max-friends` (default 5000), and the `redis` section for multi-proxy networks.
+The same file on every platform: `storage.type` `sqlite` or `mysql` (MySQL/MariaDB), `request-expiry-minutes`
+(default 5), `max-friends` (default 5000), and the `redis` section (proxies only; ignored on Paper).
 
 ## Multiple proxies
 
 Set `storage.type: mysql` on every proxy (same database), then `redis.enabled: true` with a unique, stable
-`redis.proxy-id` per proxy. Friends then work across proxies: requests, accept/deny, join/leave messages,
-online status, current server, `/f list` and tab-completion all see the whole network.
+`redis.proxy-id` per proxy. Velocity and BungeeCord proxies can be mixed. Requests, accept/deny, join/leave
+messages, status, current server, `/f list` and tab-completion then see the whole network.
 
 - Redis holds only short-lived shared state: who is online where (`<ns>:online`), pending requests (one key
   each, expiring with the request), a heartbeat per proxy and one pub/sub channel. MySQL stays the source of truth.
@@ -54,20 +68,31 @@ online status, current server, `/f list` and tab-completion all see the whole ne
   offline. A restarted proxy clears what its previous run left behind.
 - After a Redis reconnect every proxy re-reads the shared state and re-announces its own players.
 
+Use the plugin either on the proxies or on standalone Paper servers, not both.
+
 ## How it works
 
-- Each online player's friends and settings are loaded with one query at login and kept in memory, so
-  lists, notifications and tab-completion never hit the database.
+- Each online player's friends and settings are loaded with one query at login (the login waits for it on
+  Velocity and BungeeCord) and kept in memory, so lists, notifications and tab-completion never hit the database.
 - Every change is an event: applied under one lock (cache + queued SQL write together, so they can't drift), then
   published through the SQL queue, so other proxies only see a change once it is stored.
-- Writes run on a single ordered database thread per proxy, never on proxy threads.
-- Friend requests live in memory (plus Redis when enabled) and expire after minutes; they are not kept in SQL.
+- SQL runs on one ordered database thread; commands run off the server's main/network threads (virtual threads on
+  Paper). Join/leave notifications are built without template parsing (~20 ns instead of ~4 µs each).
+- Chat on BungeeCord and Paper goes out as BungeeCord components, the one chat API every version has; the core
+  uses Adventure (bundled and relocated where the platform lacks it).
+- Paper jar: a Java 8 bootstrap loads the Java 25 plugin from an embedded jar, so CraftBukkit's class rewriter
+  (1.13+, which can't read Java 25 class files before ~1.21) never sees it. It skips SQLite (every Paper bundles its
+  own; the SQL stays portable to SQLite 3.7.2, Paper 1.8.8's) and Redis, so it is 3.4 MB, and tells Paper 1.20.5+
+  not to remap it.
 - Tables are `friends_players` and `friends_friendships`. Data from the old Bungee/Paper tables
   (`players`, `friends`, `requests`, `settings`) is not migrated.
 
 ## Tests
 
-`./gradlew :common:test` runs everything that needs no services (SQLite, in-memory multi-proxy, randomized
-cache-vs-database checks with a deliberately slow database, a concurrency stress test). Add
-`-Dfriends.mysql=host:port/db:user:password` and/or `-Dfriends.redis=host:port` to also run the MySQL and
-real-Redis suites (they use throwaway tables/key namespaces).
+`./gradlew build` runs everything that needs no services: SQLite, in-memory multi-proxy, randomized
+cache-vs-database checks with a deliberately slow database, a concurrency stress test, chat conversion on the
+newest and on the 1.8 BungeeCord chat API, and the SQLite suites on sqlite-jdbc 3.7.2 / 3.21.0.1 (the drivers
+Paper 1.8.8 / 1.12.2 bundle). Add `-Dfriends.mysql=host:port/db:user:password` and/or `-Dfriends.redis=host:port`
+to also run the MySQL and real-Redis suites (throwaway tables/key namespaces).
+
+End-to-end on real servers: see [`tools/e2e/README.md`](tools/e2e/README.md).

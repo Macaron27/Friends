@@ -5,15 +5,11 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
-import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -21,10 +17,12 @@ import org.spongepowered.configurate.ConfigurationNode;
 import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
 
 import com.friends.common.FriendCommand;
-import com.friends.common.Friends;
+import com.friends.common.FriendsRuntime;
+import com.friends.common.LuckPermsPrefix;
 import com.friends.common.Network;
 import com.friends.common.Platform;
 import com.friends.common.RedisNetwork;
+import com.friends.common.Settings;
 import com.friends.common.Storage;
 import com.google.inject.Inject;
 import com.velocitypowered.api.command.CommandManager;
@@ -45,20 +43,15 @@ import com.velocitypowered.api.proxy.ProxyServer;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.luckperms.api.LuckPermsProvider;
-import net.luckperms.api.model.user.User;
 
-@Plugin(id = "friends", name = "Friends", version = "0.3.0",
+@Plugin(id = "friends", name = "Friends", version = "0.4.0",
         description = "Hypixel-style friends system",
         dependencies = @Dependency(id = "luckperms", optional = true))
 public final class FriendsVelocity {
     private final ProxyServer proxy;
     private final Logger log;
     private final Path dataDir;
-    private ExecutorService db;
-    private Storage storage;
-    private Network network;
-    private Friends friends;
+    private FriendsRuntime runtime;
     private VelocityPlatform platform;
 
     @Inject
@@ -70,60 +63,49 @@ public final class FriendsVelocity {
 
     @Subscribe
     public void onInit(ProxyInitializeEvent event) {
-        ConfigurationNode config;
+        Storage storage = null;
         try {
-            config = loadConfig();
-            storage = openStorage(config);
-            network = openNetwork(config);
-        } catch (IOException | SQLException e) {
+            Settings settings = Settings.read(source(loadConfig()));
+            storage = settings.openStorage(dataDir);
+            Network network = RedisNetwork.open(settings, log);
+            Function<UUID, String> prefixes = proxy.getPluginManager().isLoaded("luckperms") ? LuckPermsPrefix::of : _ -> null;
+            platform = new VelocityPlatform(proxy, prefixes);
+            runtime = new FriendsRuntime(settings, storage, network, platform, log);
+            log.info("Friends enabled (proxy id: {})", network.proxyId());
+        } catch (IOException | SQLException | IllegalArgumentException e) {
             log.error("Friends is disabled: {}", e.getMessage(), e);
             if (storage != null) storage.close();
             return;
         }
-        // One thread keeps writes ordered and off the proxy's event/command threads.
-        db = Executors.newSingleThreadExecutor(Thread.ofPlatform().name("friends-db").daemon().factory());
-        Function<UUID, String> prefixes = proxy.getPluginManager().isLoaded("luckperms") ? LuckPermsPrefix::of : _ -> null;
-        platform = new VelocityPlatform(proxy, prefixes);
-        friends = new Friends(storage, platform, network, db, Clock.systemUTC(),
-                Duration.ofMinutes(config.node("request-expiry-minutes").getLong(5)),
-                config.node("max-friends").getInt(5000), log);
-        friends.start();
-
-        FriendCommand command = new FriendCommand(friends);
         CommandManager commands = proxy.getCommandManager();
-        commands.register(commands.metaBuilder("friend").aliases("f", "friends").plugin(this).build(), new Cmd(command, platform, null));
-        commands.register(commands.metaBuilder("fl").plugin(this).build(), new Cmd(command, platform, "list"));
-        commands.register(commands.metaBuilder("status").plugin(this).build(), new Cmd(command, platform, "status"));
-        proxy.getScheduler().buildTask(this, friends::expireRequests).repeat(Duration.ofSeconds(1)).schedule();
-        log.info("Friends enabled (proxy id: {})", network.proxyId());
+        commands.register(commands.metaBuilder("friend").aliases("f", "friends").plugin(this).build(), new Cmd(runtime.command, platform, null));
+        commands.register(commands.metaBuilder("fl").plugin(this).build(), new Cmd(runtime.command, platform, "list"));
+        commands.register(commands.metaBuilder("status").plugin(this).build(), new Cmd(runtime.command, platform, "status"));
+        proxy.getScheduler().buildTask(this, runtime.friends::expireRequests).repeat(Duration.ofSeconds(1)).schedule();
     }
 
     @Subscribe
     public EventTask onPostLogin(PostLoginEvent event) {
-        return friends == null ? null : EventTask.resumeWhenComplete(friends.connect(platform.online(event.getPlayer())));
+        return runtime == null ? null : EventTask.resumeWhenComplete(runtime.friends.connect(platform.online(event.getPlayer())));
     }
 
     @Subscribe
     public void onServerPostConnect(ServerPostConnectEvent event) {
-        if (friends == null) return;
+        if (runtime == null) return;
         Platform.Online online = platform.online(event.getPlayer());
-        friends.moved(online);
-        if (event.getPreviousServer() == null) friends.greet(online);
+        runtime.friends.moved(online);
+        if (event.getPreviousServer() == null) runtime.friends.greet(online);
     }
 
     @Subscribe
     public void onDisconnect(DisconnectEvent event) {
         // Safe for every login status: it's a no-op unless this exact session loaded a profile.
-        if (friends != null) friends.disconnect(platform.online(event.getPlayer()));
+        if (runtime != null) runtime.friends.disconnect(platform.online(event.getPlayer()));
     }
 
     @Subscribe
-    public void onShutdown(ProxyShutdownEvent event) throws InterruptedException {
-        if (db == null) return;
-        db.shutdown(); // players are already disconnected: finish their writes (and the publishes queued behind them)
-        if (!db.awaitTermination(10, TimeUnit.SECONDS)) log.warn("Friends: gave up waiting for pending database writes");
-        network.close();
-        storage.close();
+    public void onShutdown(ProxyShutdownEvent event) {
+        if (runtime != null) runtime.close(); // players are already disconnected
     }
 
     private ConfigurationNode loadConfig() throws IOException {
@@ -137,31 +119,16 @@ public final class FriendsVelocity {
         return YamlConfigurationLoader.builder().path(file).build().load();
     }
 
-    private static boolean mysql(ConfigurationNode config) {
-        return "mysql".equalsIgnoreCase(config.node("storage", "type").getString("sqlite"));
-    }
+    private static Settings.Source source(ConfigurationNode root) {
+        return new Settings.Source() {
+            private ConfigurationNode node(String path) {
+                return root.node((Object[]) path.split("\\."));
+            }
 
-    private Storage openStorage(ConfigurationNode config) throws SQLException {
-        if (mysql(config)) {
-            ConfigurationNode m = config.node("mysql");
-            return Storage.mysql(m.node("host").getString("localhost"), m.node("port").getInt(3306),
-                    m.node("database").getString("friends"), m.node("user").getString("root"),
-                    m.node("password").getString(""), m.node("use-ssl").getBoolean(false));
-        }
-        return Storage.sqlite(dataDir.resolve(config.node("sqlite", "file").getString("friends.db")));
-    }
-
-    private Network openNetwork(ConfigurationNode config) throws IOException {
-        ConfigurationNode r = config.node("redis");
-        if (!r.node("enabled").getBoolean(false)) return Network.LOCAL;
-        if (!mysql(config)) {
-            throw new IOException("redis (multi-proxy) needs storage.type: mysql, shared by every proxy");
-        }
-        String id = r.node("proxy-id").getString("");
-        if (id.isBlank()) id = UUID.randomUUID().toString().substring(0, 8);
-        return new RedisNetwork(r.node("host").getString("localhost"), r.node("port").getInt(6379),
-                r.node("password").getString(""), r.node("database").getInt(0), r.node("ssl").getBoolean(false),
-                r.node("namespace").getString("friends"), id, log);
+            @Override public String string(String path, String def) { return node(path).getString(def); }
+            @Override public int number(String path, int def) { return node(path).getInt(def); }
+            @Override public boolean flag(String path, boolean def) { return node(path).getBoolean(def); }
+        };
     }
 
     record VelocityPlatform(ProxyServer proxy, Function<UUID, String> prefixes) implements Platform {
@@ -181,7 +148,7 @@ public final class FriendsVelocity {
         @Override
         public void execute(Invocation invocation) {
             if (invocation.source() instanceof Player p) {
-                command.execute(platform.online(p), args(invocation.arguments()));
+                command.execute(platform.online(p), FriendCommand.withSub(sub, invocation.arguments()));
             } else {
                 invocation.source().sendMessage(Component.text("Only players can use this command.", NamedTextColor.RED));
             }
@@ -189,30 +156,15 @@ public final class FriendsVelocity {
 
         @Override
         public List<String> suggest(Invocation invocation) {
-            String[] args = invocation.arguments().length == 0 ? new String[] {""} : invocation.arguments();
-            return invocation.source() instanceof Player p ? command.suggest(platform.online(p), args(args)) : List.of();
+            return invocation.source() instanceof Player p
+                    ? command.suggest(platform.online(p), FriendCommand.withSub(sub, FriendCommand.completing(invocation.arguments())))
+                    : List.of();
         }
 
         @Override
         public boolean hasPermission(Invocation invocation) {
             // Allowed unless explicitly denied: Velocity has no permission defaults without a permissions plugin.
             return invocation.source().getPermissionValue("friends.use") != Tristate.FALSE;
-        }
-
-        private String[] args(String[] args) {
-            if (sub == null) return args;
-            String[] out = new String[args.length + 1];
-            out[0] = sub;
-            System.arraycopy(args, 0, out, 1, args.length);
-            return out;
-        }
-    }
-
-    /** Only touched when LuckPerms is loaded, so its classes are never needed otherwise. */
-    static final class LuckPermsPrefix {
-        static String of(UUID id) {
-            User user = LuckPermsProvider.get().getUserManager().getUser(id);
-            return user == null ? null : user.getCachedData().getMetaData().getPrefix();
         }
     }
 }
