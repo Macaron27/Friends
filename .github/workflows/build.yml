@@ -35,7 +35,7 @@ jobs:
           java-version: "25"
       - uses: gradle/actions/setup-gradle@v6
       # Runs every suite: SQLite, MySQL and real Redis (throwaway tables / key namespaces).
-      - run: ./gradlew build -Dfriends.mysql=127.0.0.1:3306/friends_test:root: -Dfriends.redis=127.0.0.1:6379
+      - run: "./gradlew build -Dfriends.mysql=127.0.0.1:3306/friends_test:root: -Dfriends.redis=127.0.0.1:6379"
       - uses: actions/upload-artifact@v7
         with:
           name: friends-velocity
