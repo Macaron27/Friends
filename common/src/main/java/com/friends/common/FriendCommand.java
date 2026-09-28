@@ -17,11 +17,9 @@ public final class FriendCommand {
     private static final int MAX_SUGGESTIONS = 100;
 
     private final Friends friends;
-    private final Platform platform;
 
-    public FriendCommand(Friends friends, Platform platform) {
+    public FriendCommand(Friends friends) {
         this.friends = friends;
-        this.platform = platform;
     }
 
     public CompletableFuture<Void> execute(Online s, String[] args) {
@@ -83,13 +81,17 @@ public final class FriendCommand {
     public List<String> suggest(Online s, String[] args) {
         if (args.length <= 1) {
             String prefix = args.length == 0 ? "" : args[0];
-            return filter(Stream.concat(SUBCOMMANDS.stream(), platform.onlineNames().stream().filter(n -> !n.equalsIgnoreCase(s.name()))), prefix);
+            return filter(Stream.concat(SUBCOMMANDS.stream(), friends.onlineNames().stream().filter(n -> !n.equalsIgnoreCase(s.name()))), prefix);
         }
         String prefix = args[args.length - 1];
         String sub = args[0].toLowerCase(Locale.ROOT);
         if (args.length > 2) return List.of();
         return switch (sub) {
-            case "add" -> filter(platform.onlineNames().stream().filter(n -> !n.equalsIgnoreCase(s.name()) && !isFriend(s, n)), prefix);
+            case "add" -> {
+                var friendNames = friends.friendNames(s.id()).stream().map(n -> n.toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
+                yield filter(friends.onlineNames().stream()
+                        .filter(n -> !n.equalsIgnoreCase(s.name()) && !friendNames.contains(n.toLowerCase(Locale.ROOT))), prefix);
+            }
             case "accept", "deny", "decline" -> filter(friends.requesterNames(s.id()).stream(), prefix);
             case "remove", "delete", "best", "nickname", "nick" -> filter(friends.friendNames(s.id()).stream(), prefix);
             case "list" -> filter(Stream.of("best"), prefix);
@@ -99,12 +101,9 @@ public final class FriendCommand {
         };
     }
 
-    private boolean isFriend(Online s, String name) {
-        return platform.player(name).map(o -> friends.isFriend(s.id(), o.id())).orElse(false);
-    }
-
     private static List<String> filter(Stream<String> options, String prefix) {
         String p = prefix.toLowerCase(Locale.ROOT);
-        return options.filter(o -> o.toLowerCase(Locale.ROOT).startsWith(p)).limit(MAX_SUGGESTIONS).toList();
+        return options.filter(o -> o.toLowerCase(Locale.ROOT).startsWith(p)).distinct()
+                .sorted(String.CASE_INSENSITIVE_ORDER).limit(MAX_SUGGESTIONS).toList();
     }
 }

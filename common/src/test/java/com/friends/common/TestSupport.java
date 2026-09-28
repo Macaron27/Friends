@@ -11,14 +11,17 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 
 import org.slf4j.LoggerFactory;
 
@@ -88,6 +91,27 @@ final class TestSupport {
         }
     }
 
+    /**
+     * A single-threaded "slow database": SQL tasks queue up and run in random FIFO batches between commands, so any
+     * logic that depends on when a write actually lands (rather than on queue order) shows up deterministically.
+     */
+    static final class LaggingDb implements Executor {
+        final ArrayDeque<Runnable> queue = new ArrayDeque<>();
+
+        @Override
+        public void execute(Runnable task) {
+            queue.add(task);
+        }
+
+        void drain() {
+            while (!queue.isEmpty()) queue.poll().run();
+        }
+
+        void runSome(java.util.Random random) {
+            for (int n = random.nextInt(3); n > 0 && !queue.isEmpty(); n--) queue.poll().run(); // 0-2 tasks: writes pile up
+        }
+    }
+
     static final class FakePlatform implements Platform {
         final Map<UUID, Online> online = new ConcurrentHashMap<>();
 
@@ -95,15 +119,81 @@ final class TestSupport {
         public Optional<Online> player(UUID id) {
             return Optional.ofNullable(online.get(id));
         }
+    }
 
-        @Override
-        public Optional<Online> player(String name) {
-            return online.values().stream().filter(o -> o.name().equalsIgnoreCase(name)).findFirst();
+    /**
+     * In-memory stand-in for Redis: shared state with the same semantics as {@link RedisNetwork#publish}, and
+     * synchronous fan-out to the other proxies. {@code hold} queues deliveries so tests can reorder them.
+     */
+    static final class Hub {
+        final Map<UUID, Presence> online = new ConcurrentHashMap<>();
+        final Map<Request.Key, Request> requests = new ConcurrentHashMap<>();
+        final Set<Set<UUID>> claims = ConcurrentHashMap.newKeySet(); // like Redis' 2s claim keys; tests clear it
+        final List<Node> nodes = new CopyOnWriteArrayList<>();
+        final List<Runnable> held = new ArrayList<>();
+        boolean hold;
+
+        Node node(String proxy) {
+            return new Node(proxy);
         }
 
-        @Override
-        public Collection<String> onlineNames() {
-            return online.values().stream().map(Online::name).sorted().toList();
+        void release() {
+            List<Runnable> batch = List.copyOf(held);
+            held.clear();
+            batch.forEach(Runnable::run);
+        }
+
+        Network.Snapshot snapshot() {
+            return new Network.Snapshot(Map.copyOf(online), List.copyOf(requests.values()));
+        }
+
+        final class Node implements Network {
+            final String proxy;
+            Listener listener;
+
+            Node(String proxy) {
+                this.proxy = proxy;
+            }
+
+            @Override public String proxyId() { return proxy; }
+
+            @Override
+            public boolean claim(UUID a, UUID b) {
+                return claims.add(Set.of(a, b));
+            }
+
+            @Override
+            public void start(Listener listener) {
+                this.listener = listener;
+                nodes.add(this);
+                listener.resync(snapshot());
+            }
+
+            @Override
+            public void publish(Event event) {
+                switch (event) {
+                    case Event.Joined(UUID id, Presence p) -> online.put(id, p);
+                    case Event.Updated(UUID id, Presence p) -> online.put(id, p);
+                    case Event.Left(UUID id, String from, Instant _) -> online.computeIfPresent(id, (_, p) -> p.proxy().equals(from) ? null : p);
+                    case Event.RequestSent(Request r) -> requests.put(r.key(), r);
+                    case Event.RequestDenied(UUID from, UUID to) -> requests.remove(new Request.Key(from, to));
+                    case Event.Befriended(var a, var b, Instant _) -> {
+                        requests.remove(new Request.Key(a.id(), b.id()));
+                        requests.remove(new Request.Key(b.id(), a.id()));
+                    }
+                    case Event.Unfriended _, Event.ProxyDown _ -> {}
+                }
+                for (Node n : nodes) {
+                    if (n == this) continue;
+                    Runnable delivery = () -> n.listener.event(event);
+                    if (hold) held.add(delivery); else delivery.run();
+                }
+            }
+
+            @Override
+            public void close() {
+                nodes.remove(this);
+            }
         }
     }
 
@@ -138,10 +228,16 @@ final class TestSupport {
         final FriendCommand command;
 
         Harness(Storage storage, int maxFriends) {
+            this(storage, maxFriends, Network.LOCAL, Runnable::run);
+        }
+
+        /** One proxy: its own players, clock and caches, sharing {@code storage} (and {@code network}) with others. */
+        Harness(Storage storage, int maxFriends, Network network, java.util.concurrent.Executor db) {
             this.storage = storage;
-            this.friends = new Friends(storage, platform, Runnable::run, clock, Duration.ofMinutes(5), maxFriends,
+            this.friends = new Friends(storage, platform, network, db, clock, Duration.ofMinutes(5), maxFriends,
                     LoggerFactory.getLogger(Harness.class));
-            this.command = new FriendCommand(friends, platform);
+            this.command = new FriendCommand(friends);
+            friends.start();
         }
 
         TestPlayer join(String name) {
