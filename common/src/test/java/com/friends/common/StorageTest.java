@@ -109,6 +109,18 @@ class StorageTest {
     }
 
     @Test
+    void sqliteRunsInWalMode() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeFalse(mysql());
+        boolean nativeDriver = (boolean) Class.forName("org.sqlite.SQLiteJDBCLoader").getMethod("isNativeMode").invoke(null);
+        org.junit.jupiter.api.Assumptions.assumeTrue(nativeDriver, "sqlite-jdbc's pure-Java fallback (old 3.7.2) has no WAL");
+        try (var c = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dir.resolve("friends.db").toAbsolutePath());
+             var rs = c.createStatement().executeQuery("PRAGMA journal_mode")) {
+            rs.next();
+            assertEquals("wal", rs.getString(1).toLowerCase());
+        }
+    }
+
+    @Test
     void touchOnlyBumpsLastSeen() throws Exception {
         storage.savePlayer(a, "Alice", "&c", t0);
         storage.touch(a, t0.plusSeconds(99));

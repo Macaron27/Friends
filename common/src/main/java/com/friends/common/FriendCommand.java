@@ -22,6 +22,20 @@ public final class FriendCommand {
         this.friends = friends;
     }
 
+    /** {@code /fl} and {@code /status} are {@code /friend list} and {@code /friend status}: prepend {@code sub} (if any). */
+    public static String[] withSub(String sub, String[] args) {
+        if (sub == null) return args;
+        String[] out = new String[args.length + 1];
+        out[0] = sub;
+        System.arraycopy(args, 0, out, 1, args.length);
+        return out;
+    }
+
+    /** Some platforms pass no argument while the first one is still empty; completion wants that empty argument. */
+    public static String[] completing(String[] args) {
+        return args.length == 0 ? new String[] {""} : args;
+    }
+
     public CompletableFuture<Void> execute(Online s, String[] args) {
         String sub = args.length == 0 ? "help" : args[0].toLowerCase(Locale.ROOT);
         String arg = args.length > 1 ? args[1] : null;

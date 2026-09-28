@@ -106,6 +106,15 @@ public final class RedisNetwork implements Network {
         }
     }
 
+    /** {@link Network#LOCAL} unless {@code redis.enabled}; multi-proxy needs MySQL shared by every proxy. */
+    public static Network open(Settings settings, Logger log) throws IOException {
+        Settings.Redis r = settings.redis();
+        if (!r.enabled()) return Network.LOCAL;
+        if (!settings.usesMysql()) throw new IOException("redis (multi-proxy) needs storage.type: mysql, shared by every proxy");
+        String id = r.proxyId().isBlank() ? UUID.randomUUID().toString().substring(0, 8) : r.proxyId();
+        return new RedisNetwork(r.host(), r.port(), r.password(), r.database(), r.ssl(), r.namespace(), id, log);
+    }
+
     private static ExecutorService single(String name) {
         return Executors.newSingleThreadExecutor(Thread.ofPlatform().name(name).daemon().factory());
     }
