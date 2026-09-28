@@ -1,2 +1,0 @@
-rootProject.name = 'friends-plugin'
-include 'common', 'paper', 'bungee', 'bungee-api-stub'

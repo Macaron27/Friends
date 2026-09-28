@@ -1,0 +1,22 @@
+# Friends (Velocity) configuration
+
+storage:
+  # sqlite: a local file, fine for a single proxy. mysql: MySQL or MariaDB.
+  type: sqlite
+
+sqlite:
+  file: friends.db
+
+mysql:
+  host: localhost
+  port: 3306
+  database: friends
+  user: root
+  password: ""
+  use-ssl: false
+
+# Pending friend requests expire after this many minutes (Hypixel: 5).
+request-expiry-minutes: 5
+
+# Maximum friends per player (Hypixel: 5000).
+max-friends: 5000

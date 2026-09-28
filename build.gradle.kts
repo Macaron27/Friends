@@ -3,8 +3,8 @@ plugins {
 }
 
 allprojects {
-    group = "com.example.friends"
-    version = "0.1.0"
+    group = "com.friends"
+    version = "0.2.0"
 
     repositories {
         mavenCentral()
@@ -17,11 +17,15 @@ subprojects {
 
     java {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(21))
+            languageVersion.set(JavaLanguageVersion.of(25))
         }
     }
 
     tasks.withType<JavaCompile> {
         options.encoding = "UTF-8"
+    }
+
+    tasks.withType<Test> {
+        useJUnitPlatform()
     }
 }

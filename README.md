@@ -1,52 +1,53 @@
-# Friends Plugin (Scaffold)
+# Friends (Velocity)
 
-This workspace contains a scaffold for a multi-module Gradle-based Friends plugin for Minecraft (Paper + Bungee), Java 21.
+A Hypixel-style friends system for [Velocity](https://papermc.io/software/velocity) 4.2, built for Java 25.
 
 Modules:
-- common: Shared models, DAOs, DB utilities, `FriendService` interface.
-- paper: Paper plugin that depends on `common`.
-- bungee: BungeeCord plugin that depends on `common`.
+- `common` — platform-agnostic core (rules, cache, storage, Adventure messages) + tests.
+- `velocity` — the Velocity plugin (thin glue: config, events, commands, optional LuckPerms prefixes).
+- `paper/`, `bungee/`, `bungee-api-stub/` — the old implementations. They still target the previous
+  `common` API and are **not part of the build** until they are ported.
 
-DB support:
-- Primary: MySQL (recommended for production).
-- Fallback: SQLite (local file `friends.db`) if MySQL is not configured.
+## Build
 
-Next steps:
-- Implement DAOs and `FriendService` using HikariCP
-- Implement commands and listeners in `paper` and `bungee` modules
-- Add migrations runner (Flyway or custom)
+```bash
+gradle :velocity:shadowJar   # -> velocity/build/libs/friends-velocity-0.2.0.jar
+gradle :common:test          # SQLite; add -Dfriends.mysql=host:port/db:user:password to also run on MySQL
+```
+
+Drop the jar in Velocity's `plugins/` folder. Velocity 4.2 itself needs Java 25. sqlite-jdbc loads a native
+library, so add `--enable-native-access=ALL-UNNAMED` to the proxy's JVM flags to silence the JDK warning.
 
 ## Commands
 
-All commands are available under `/f` or `/friends`:
-- `/f add <player>` — send a friend request
-- `/f remove <player>` — remove a friend
-- `/f accept <player>` — accept a friend request
-- `/f deny <player>` — deny a friend request
-- `/f help` — show available commands
-- `/f list` — list your friends (paginated)
-- `/f requests <page>` — show incoming requests (paginated)
-- `/f removeall` — remove all friends (must confirm: `/f removeall confirm`)
-- `/f notifications|notif` — toggle join/leave notifications
-- `/f settings` — show settings
-- `/f settings expiry <minutes>` — set request expiry in minutes
-- `/f settings notifications <on|off>` — toggle notifications
+`/friend` (aliases `/f`, `/friends`):
 
-Plugin messaging channel used for richer notifications: `friends:notify` (payload: `TYPE|uuid|username|server`) — sent from Bungee to target servers.
+| Command | What it does |
+|---|---|
+| `/f add <player>` or `/f <player>` | Send a request (works for offline players who joined before). If they already asked you, you become friends. |
+| `/f accept <player>` / `/f deny <player>` | Answer a request (clickable `[ACCEPT] - [DENY]` in chat). Requests expire after 5 minutes. |
+| `/f list [best] [page]`, `/fl [page]` | 10 per page with clickable `<< >>`: best friends first (bold), then online (with server), then offline (by last seen). |
+| `/f requests` | Pending incoming and outgoing requests. |
+| `/f remove <player>` | Remove a friend (both sides). |
+| `/f best <player>` | Toggle best friend. |
+| `/f nickname <player> [nickname]` | Nickname only you can see (in your list and notifications). No nickname = clear. |
+| `/f removeall [confirm]` | Remove every friend except best friends, after a clickable confirmation. |
+| `/f notifications` | Toggle "Friend > X joined./left." messages. |
+| `/status [online\|away\|busy\|offline]` | Status shown to friends; `offline` = appear offline (no join/leave messages). |
 
-Permissions (defaults):
-- `friends.use` (true) — allows using friends commands
-- `friends.add` (true) — send requests
-- `friends.remove` (true) — remove friends
-- `friends.accept` (true) — accept requests
-- `friends.deny` (true) — deny requests
-- `friends.list` (true) — list friends
-- `friends.requests` (true) — view incoming requests
-- `friends.notifications` (true) — toggle notifications
-- `friends.settings` (true) — change settings
-- `friends.removeall` (op) — remove all friends
-- `friends.admin` (op) — admin actions
+Permission: `friends.use` — allowed unless explicitly set to false (Velocity has no permission defaults).
 
-Notes:
-- Currently commands are wired to an in-memory `FriendService` for testing; a DB-backed service will replace it.
-- MySQL is the recommended production DB; an SQLite fallback is available for local testing.
+## Config (`plugins/friends/config.yml`)
+
+`storage.type` `sqlite` (single proxy) or `mysql` (MySQL/MariaDB), `request-expiry-minutes` (default 5),
+`max-friends` (default 5000).
+
+## How it works
+
+- Each online player's friends and settings are loaded with one query at login and kept in memory, so
+  lists, notifications and tab-completion never hit the database.
+- Writes update the cache immediately and run on a single ordered database thread, never on proxy threads.
+- Friend requests live in memory (they expire after minutes) and are lost on proxy restart.
+- Single proxy only: multiple Velocity instances would need a shared cache/pub-sub (e.g. Redis).
+- Tables are `friends_players` and `friends_friendships`. Data from the old Bungee/Paper tables
+  (`players`, `friends`, `requests`, `settings`) is not migrated.
