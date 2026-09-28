@@ -1,0 +1,42 @@
+name: Friends
+main: com.friends.paper.FriendsPlugin
+version: 0.1.0
+api-version: "1.21"
+commands:
+  f:
+    description: Friends command (root)
+    aliases: [friends, fl]
+permissions:
+  friends.use:
+    description: Allows use of friends commands
+    default: true
+  friends.add:
+    description: Allow sending friend requests
+    default: true
+  friends.remove:
+    description: Allow removing friends
+    default: true
+  friends.accept:
+    description: Allow accepting friend requests
+    default: true
+  friends.deny:
+    description: Allow denying friend requests
+    default: true
+  friends.list:
+    description: Allow listing friends
+    default: true
+  friends.requests:
+    description: Allow viewing incoming requests
+    default: true
+  friends.notifications:
+    description: Toggle join/leave notifications
+    default: true
+  friends.settings:
+    description: Allow changing settings
+    default: true
+  friends.removeall:
+    description: Allow removing all friends
+    default: op
+  friends.admin:
+    description: Admin commands
+    default: op

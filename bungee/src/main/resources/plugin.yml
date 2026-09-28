@@ -1,0 +1,30 @@
+name: FriendsBungee
+main: com.friends.bungee.FriendsBungee
+version: 0.1.0
+commands:
+  f:
+    description: Friends command (proxy root)
+    aliases: [friends]
+permissions:
+  friends.use:
+    default: true
+  friends.add:
+    default: true
+  friends.remove:
+    default: true
+  friends.accept:
+    default: true
+  friends.deny:
+    default: true
+  friends.list:
+    default: true
+  friends.requests:
+    default: true
+  friends.notifications:
+    default: true
+  friends.settings:
+    default: true
+  friends.removeall:
+    default: op
+  friends.admin:
+    default: op

@@ -1,0 +1,22 @@
+# Storage configuration
+storage:
+  type: sqlite # mysql or sqlite
+
+# MySQL settings (used when storage.type: mysql)
+mysql:
+  host: localhost
+  port: 3306
+  database: friends
+  user: root
+  password: ""
+  useSSL: false
+  poolSize: 10
+
+# SQLite file (used when storage.type: sqlite)
+sqlite:
+  file: friends.db
+
+messages:
+  default_prefix: "&aFriend >"
+  short_prefix: "&aF >"
+  use_short_prefix: false
