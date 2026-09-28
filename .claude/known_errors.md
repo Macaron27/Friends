@@ -31,3 +31,5 @@
   must set it to `Instant.now()` or keys expire instantly.
 - **Name shadowing:** a local variable named `redis` shadows the `redis.clients...` package in fully-qualified names.
 - **Jedis 8:** `JedisPooled` → `RedisClient.builder()`; `ssl(boolean)` is deprecated → `sslOptions(SslOptions.defaults())`.
+- **GitHub Actions YAML:** an unquoted `run:` containing `: ` (e.g. `...:root: -D...`) is parsed as a mapping and the
+  whole workflow is rejected (run with 0 jobs, named after the file path). Quote such commands.
