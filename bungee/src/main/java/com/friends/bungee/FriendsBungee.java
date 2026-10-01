@@ -62,7 +62,7 @@ public final class FriendsBungee extends Plugin implements Listener {
                 @Override public String prefix(UUID id) { return prefixes.apply(id); }
                 @Override public void send(ProxiedPlayer p, BaseComponent[] message) { p.sendMessage(message); }
             });
-            runtime = new FriendsRuntime(settings, storage, network, sessions, log);
+            runtime = new FriendsRuntime(settings, storage, network, sessions, new BungeeHooks(getProxy().getPluginManager()::callEvent), log);
             log.info("Friends enabled (proxy id: {})", network.proxyId());
         } catch (IOException | SQLException | IllegalArgumentException e) {
             log.error("Friends is disabled: {}", e.getMessage(), e);

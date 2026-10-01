@@ -10,6 +10,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
+import com.friends.api.Status;
+
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextColor;

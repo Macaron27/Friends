@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
+import com.friends.api.Status;
 import com.friends.common.Storage.PlayerRow;
 import com.friends.common.TestSupport.Harness;
 

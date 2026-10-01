@@ -17,10 +17,12 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.friends.api.FriendsAPI;
 import com.friends.common.ChatSessions;
 import com.friends.common.FriendCommand;
 import com.friends.common.FriendsRuntime;
@@ -64,7 +66,7 @@ public final class PaperFriends implements Listener {
                 @Override public String prefix(UUID id) { return prefixes.apply(id); }
                 @Override public void send(Player p, BaseComponent[] message) { p.spigot().sendMessage(message); }
             });
-            runtime = new FriendsRuntime(settings, storage, Network.LOCAL, sessions, log);
+            runtime = new FriendsRuntime(settings, storage, Network.LOCAL, sessions, new BukkitHooks(plugin.getServer().getPluginManager()), log);
         } catch (SQLException | IllegalArgumentException e) {
             log.error("Friends is disabled: {}", e.getMessage(), e);
             if (storage != null) storage.close();
@@ -83,6 +85,8 @@ public final class PaperFriends implements Listener {
         events.registerEvent(PlayerQuitEvent.class, this, EventPriority.MONITOR,
                 (_, e) -> { if (e instanceof PlayerQuitEvent quit) leave(quit.getPlayer()); }, plugin);
         plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, runtime.friends::expireRequests, 20L, 20L);
+        // Also FriendsAPI.get(). Bukkit drops the service by itself when the plugin disables.
+        plugin.getServer().getServicesManager().register(FriendsAPI.class, runtime.api, plugin, ServicePriority.Normal);
         for (Player p : plugin.getServer().getOnlinePlayers()) join(p); // enabled while players are online (/reload)
     }
 

@@ -48,3 +48,21 @@
   (deprecated, breaks the configuration cache) — capture it during configuration.
 - **E2E bot protocol ids:** minecraft-data lacks 26.2/26.3; minecraft.wiki's protocol page documents the latest
   (26.3 = 777; known packs moved 0x0E -> 0x0F, play ids shifted). Paper 26.x enables the whitelist by default.
+
+- **Duplicated build outputs ("Foo 2.class"):** seen once in common/build (cause not confirmed; the repo is under
+  ~/Desktop, which macOS can sync). Gradle then fails with "Could not execute test class 'X 2' (wrong name: X)":
+  `./gradlew :<module>:clean`; nothing tracked by git is affected.
+- **Plugin code must never run on the database thread:** a continuation (`thenCompose`) of a `db(...)` future runs on
+  the DB thread, so a hook there blocks SQL, and a listener that joins an API future deadlocks. Hop first:
+  `thenComposeAsync(..., async)`. `FriendsApiTest.listenersRunOffTheDatabaseThread...` deadlocks without it.
+- **`supplyAsync(x, ex).thenCompose(f)` can run `f` on the caller's thread** (if x finished first). For API actions
+  the whole action goes inside the `supplyAsync`, or a Bukkit async event could fire from the server thread.
+- **Cancellable events outside the lock:** fire, then re-check under the lock. Post events ("...Added") come from the
+  locked commit, exactly once, delivered in order by one FriendsRuntime thread.
+- **Offline cache vs a racing change:** put the cache entry *before* queuing its read; changes queue their write
+  before dropping entries, so any surviving entry was read after the write. Reversed, a stale list stays cached.
+- **javac 25 `--release 8`** compiles against Java 25 jars (velocity-api) fine, but Gradle refuses such a dependency
+  for a Java 8 consumer: `java { disableAutoTargetJvm() }`. Published metadata still says JVM 8 (from `release`).
+- **MockBukkit + Adventure 5:** paper-api 1.21.11's `BookMeta` implements Adventure 4's `Book`, sealed in Adventure 5
+  (IncompatibleClassChangeError). Run Paper tests against the shadow jar (Adventure relocated), like a real server.
+  MockBukkit also subclasses the test plugin (can't be `final`) and ignores plugin.yml permission defaults.

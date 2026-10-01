@@ -1,2 +1,4 @@
 rootProject.name = "friends-plugin"
-include("common", "velocity", "bungee", "paper")
+include("api", "common", "velocity", "bungee", "paper")
+include("probe")
+project(":probe").projectDir = file("tools/e2e/probe")

@@ -226,16 +226,23 @@ final class TestSupport {
         final Storage storage;
         final Friends friends;
         final FriendCommand command;
+        final FriendsApi api;
 
         Harness(Storage storage, int maxFriends) {
             this(storage, maxFriends, Network.LOCAL, Runnable::run);
         }
 
         /** One proxy: its own players, clock and caches, sharing {@code storage} (and {@code network}) with others. */
-        Harness(Storage storage, int maxFriends, Network network, java.util.concurrent.Executor db) {
+        Harness(Storage storage, int maxFriends, Network network, Executor db) {
+            this(storage, maxFriends, network, db, Runnable::run, Hooks.NONE);
+        }
+
+        /** With {@code async} = Runnable::run, hooks (plugins) are asked on the calling thread: fully deterministic. */
+        Harness(Storage storage, int maxFriends, Network network, Executor db, Executor async, Hooks hooks) {
             this.storage = storage;
-            this.friends = new Friends(storage, platform, network, db, clock, Duration.ofMinutes(5), maxFriends,
-                    LoggerFactory.getLogger(Harness.class));
+            this.friends = new Friends(storage, platform, network, db, async, clock, Duration.ofMinutes(5), maxFriends,
+                    hooks, LoggerFactory.getLogger(Harness.class));
+            this.api = new FriendsApi(friends, platform, async);
             this.command = new FriendCommand(friends);
             friends.start();
         }

@@ -1,5 +1,7 @@
 package com.friends.common;
 
+import com.friends.api.Status;
+
 /** Where an online player is on the network. {@code server} is null until they reach a backend. */
 public record Presence(String name, String prefix, String proxy, String server, Status status) {
 

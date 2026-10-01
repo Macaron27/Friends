@@ -6,10 +6,12 @@
 Scenarios: paper-<version> (full friend flow with bot players: 1.8.8, 1.12.2, 1.16.5, 1.20.6, 1.21.11, 26.3),
 load-<version> (plugin enables and answers the console), bungee[-<version>] / velocity[-<version>] (the proxy
 plugin with players and a Paper backend of that version, default 1.8.8), mixed (BungeeCord + Velocity sharing MySQL and Redis; needs
-FRIENDS_MYSQL=host:port/db:user:password and FRIENDS_REDIS=host:port). Servers run in <jars-dir>/e2e-*.
+FRIENDS_MYSQL=host:port/db:user:password and FRIENDS_REDIS=host:port), api-<version> / api-bungee / api-velocity (another
+plugin, tools/e2e/probe, using the API and its events). Servers run in <jars-dir>/e2e-*.
 """
 import os
 import platform
+import shutil
 import sys
 import time
 import traceback
@@ -19,8 +21,9 @@ from mcbot import Bot  # noqa: E402
 import servers  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 PLUGIN = {m: os.path.join(ROOT, m, "build", "libs", f"friends-{m}-{VERSION}.jar") for m in ("paper", "bungee", "velocity")}
+PROBE = os.path.join(ROOT, "tools", "e2e", "probe", "build", "libs", "friends-probe.jar")
 PROTOCOL = {"1.8.8": 47, "1.12.2": 340, "1.16.5": 754, "1.20.6": 766, "1.21.11": 774, "26.3": 777}
 PAUSE = 0.4  # keeps well under Spigot's chat spam filter
 
@@ -139,6 +142,58 @@ def scenario_proxy(jars, kind, version="1.8.8"):
         back.stop()
 
 
+def api_flow(srv, alice, bob):
+    """What the probe plugin sees and does through the API: events (one cancelled), reads and actions from listeners."""
+    srv.wait_log(r"probe: api ok")
+    mark = len(srv.lines)
+    cmd(alice, "/f add Bob", "You sent a friend request to Bob!")
+    srv.wait_log(r"probe: FriendRequestSendEvent Alice->Bob", mark)
+    cmd(bob, "/f accept Alice", "You are now friends with Alice")
+    for line in (r"probe: FriendAddEvent Bob->Alice", r"probe: FriendAddedEvent Bob->Alice",
+                 r"probe: areFriends=true friends of Bob=\[Alice\]", r"probe: FriendStatusChangeEvent Bob ONLINE->BUSY",
+                 r"probe: setStatus Bob BUSY -> SUCCESS"):
+        srv.wait_log(line, mark)
+    cmd(alice, "/fl", "Bob is busy")  # the probe's API call, as players see it
+    bob.say("/status away")           # the probe cancels this one: no reply, nothing changes
+    srv.wait_log(r"probe: FriendStatusChangeEvent Bob BUSY->AWAY cancelled", mark)
+    time.sleep(PAUSE)
+    cmd(alice, "/fl", "Bob is busy")
+    cmd(alice, "/f remove Bob", "You removed Bob from your friends list!")
+    srv.wait_log(r"probe: FriendRemoveEvent Alice->Bob", mark)
+    srv.wait_log(r"probe: FriendRemovedEvent Alice->Bob", mark)
+
+
+def scenario_api(jars, where):
+    """The probe on Paper <where> (a version), or on BungeeCord / Velocity (with a 1.8.8 backend)."""
+    if where in ("bungee", "velocity"):
+        back_port, proxy_port = 25800 + (0 if where == "bungee" else 2), 25801 + (0 if where == "bungee" else 2)
+        back = backend(jars, back_port)
+        make = servers.bungee if where == "bungee" else servers.velocity
+        jar = os.path.join(jars, "BungeeCord.jar" if where == "bungee" else "velocity.jar")
+        srv = make(os.path.join(jars, f"e2e-api-{where}"), jar, proxy_port, back_port, PLUGIN[where])
+        port, protocol, stop = proxy_port, 47, "end"
+    else:
+        back, port, protocol, stop = None, 25810 + list(PROTOCOL).index(where), PROTOCOL[where], "stop"
+        srv = servers.paper(os.path.join(jars, f"e2e-api-{where}"), os.path.join(jars, f"paper-{where}.jar"), port, PLUGIN["paper"])
+    shutil.copy(PROBE, os.path.join(srv.folder, "plugins"))
+    try:
+        if back:
+            back.start()
+        srv.start()
+        alice, bob = players(port, protocol)
+        api_flow(srv, alice, bob)
+        for b in (alice, bob):
+            b.close()
+        if not back:  # Bukkit: every event asynchronous, never on the server thread
+            probe = [line for line in srv.lines if "probe: Friend" in line]
+            assert probe and all("async=true main=false" in line for line in probe), "".join(probe)
+        check_clean(srv)
+    finally:
+        srv.stop(stop)
+        if back:
+            back.stop()
+
+
 def scenario_mixed(jars):
     rhost, rport = os.environ["FRIENDS_REDIS"].split(":")
     shared = {**mysql_settings(), "redis.enabled": True, "redis.host": rhost, "redis.port": int(rport),
@@ -168,13 +223,16 @@ def scenario_mixed(jars):
 
 def main():
     jars = os.path.abspath(sys.argv[1])
-    wanted = sys.argv[2:] or [f"paper-{v}" for v in PROTOCOL] + ["bungee", "velocity", "bungee-26.3", "velocity-26.3"]
+    wanted = sys.argv[2:] or [f"paper-{v}" for v in PROTOCOL] + ["bungee", "velocity", "bungee-26.3", "velocity-26.3",
+                                                                 "api-1.8.8", "api-1.20.6", "api-26.3", "api-bungee", "api-velocity"]
     failed = []
     for name in wanted:
         start = time.time()
         try:
             if name.startswith("paper-"):
                 scenario_paper(jars, name[6:])
+            elif name.startswith("api-"):
+                scenario_api(jars, name[4:])
             elif name.startswith("load-"):
                 scenario_load(jars, name[5:])
             elif name.split("-")[0] in ("bungee", "velocity"):

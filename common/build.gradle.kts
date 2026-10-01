@@ -3,6 +3,8 @@ plugins {
 }
 
 dependencies {
+    api(project(":api"))
+
     // Provided at runtime by Velocity (and Paper), so compileOnly here.
     compileOnly(platform("net.kyori:adventure-bom:5.2.0"))
     compileOnly("net.kyori:adventure-api")

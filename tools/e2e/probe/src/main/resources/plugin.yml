@@ -1,0 +1,5 @@
+name: FriendsProbe
+main: com.friends.probe.PaperProbe
+version: "1"
+api-version: "1.13"
+depend: [Friends]

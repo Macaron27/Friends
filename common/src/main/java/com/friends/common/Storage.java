@@ -14,6 +14,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.friends.api.Status;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -159,12 +160,24 @@ public final class Storage implements AutoCloseable {
         try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(
                 "SELECT uuid, name, prefix, last_seen FROM friends_players WHERE name_lower = ? ORDER BY last_seen DESC LIMIT 1")) {
             p.setString(1, name.toLowerCase(Locale.ROOT));
-            try (ResultSet rs = p.executeQuery()) {
-                return rs.next()
-                        ? Optional.of(new PlayerRow(UUID.fromString(rs.getString(1)), rs.getString(2), rs.getString(3),
-                                Instant.ofEpochMilli(rs.getLong(4))))
-                        : Optional.empty();
-            }
+            return playerRow(p);
+        }
+    }
+
+    public Optional<PlayerRow> player(UUID id) throws SQLException {
+        try (Connection c = ds.getConnection(); PreparedStatement p = c.prepareStatement(
+                "SELECT uuid, name, prefix, last_seen FROM friends_players WHERE uuid = ?")) {
+            p.setString(1, id.toString());
+            return playerRow(p);
+        }
+    }
+
+    private static Optional<PlayerRow> playerRow(PreparedStatement p) throws SQLException {
+        try (ResultSet rs = p.executeQuery()) {
+            return rs.next()
+                    ? Optional.of(new PlayerRow(UUID.fromString(rs.getString(1)), rs.getString(2), rs.getString(3),
+                            Instant.ofEpochMilli(rs.getLong(4))))
+                    : Optional.empty();
         }
     }
 
