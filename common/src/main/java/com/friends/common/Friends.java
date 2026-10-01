@@ -19,10 +19,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 
+import com.friends.api.Result;
+import com.friends.api.Status;
 import com.friends.common.Platform.Online;
 import com.friends.common.Storage.PlayerRow;
 
@@ -32,7 +35,8 @@ import net.kyori.adventure.text.Component;
 /**
  * Friends core: rules, caches and messaging. Reads come from memory; SQL writes are queued on {@code db}, which must
  * run tasks one at a time in order. Anything other proxies must see is an {@link Event}: applied here via
- * {@link #apply}, then published on the {@link Network}, whose other proxies apply the same event.
+ * {@link #apply}, then published on the {@link Network}, whose other proxies apply the same event. Commands also back
+ * the API: each returns a {@link Result} besides replying to the player, and asks {@link Hooks} (plugins) first.
  */
 public final class Friends implements Network.Listener {
     public static final int PAGE_SIZE = 10;
@@ -68,6 +72,8 @@ public final class Friends implements Network.Listener {
     private final Clock clock;
     private final Duration requestExpiry;
     private final int maxFriends;
+    private final Hooks hooks;
+    private final Executor async; // asks plugins (hooks) off the database thread
     private final Logger log;
     // Every state change (decide, update caches, queue the SQL write, publish) happens under this lock, so SQL writes
     // are queued in the same order as the cache changes. Reads stay lock-free (concurrent maps).
@@ -80,9 +86,18 @@ public final class Friends implements Network.Listener {
     private final Set<UUID> stale = ConcurrentHashMap.newKeySet();
     // Pending requests, network-wide. ponytail: memory/Redis only; they expire within minutes anyway.
     private final Map<Request.Key, Request> requests = new ConcurrentHashMap<>();
+    // Friends of players not loaded here, read for the API. An entry is dropped as soon as a friendship or the presence
+    // of its player changes, so only the friends' names and last-seen times can be up to OFFLINE_TTL old.
+    // ponytail: evicts arbitrary entries once full; Caffeine if hit rates ever matter.
+    private static final int OFFLINE_MAX = 1024;
+    private static final Duration OFFLINE_TTL = Duration.ofSeconds(30);
+    private final Map<UUID, Cached> offline = new ConcurrentHashMap<>();
 
-    public Friends(Storage storage, Platform platform, Network network, Executor db, Clock clock,
-                   Duration requestExpiry, int maxFriends, Logger log) {
+    private record Cached(CompletableFuture<List<Friend>> friends, Instant expires) {}
+
+    /** {@code db} runs SQL in order, one task at a time; {@code async} runs whatever asks plugins (any threads). */
+    public Friends(Storage storage, Platform platform, Network network, Executor db, Executor async, Clock clock,
+                   Duration requestExpiry, int maxFriends, Hooks hooks, Logger log) {
         this.storage = storage;
         this.platform = platform;
         this.network = network;
@@ -91,6 +106,8 @@ public final class Friends implements Network.Listener {
         this.clock = clock;
         this.requestExpiry = requestExpiry;
         this.maxFriends = maxFriends;
+        this.hooks = hooks;
+        this.async = async;
         this.log = log;
     }
 
@@ -150,6 +167,7 @@ public final class Friends implements Network.Listener {
     private void applyLocked(Event event) {
         switch (event) {
             case Event.Joined(UUID id, Presence p) -> {
+                offline.remove(id);
                 presence.put(id, p);
                 Instant now = clock.instant();
                 forFriendsOf(id, f -> f.seen(p.name(), p.prefix(), now), p.status() != Status.OFFLINE, true);
@@ -157,6 +175,7 @@ public final class Friends implements Network.Listener {
             case Event.Updated(UUID id, Presence p) ->
                     presence.compute(id, (_, old) -> old == null || old.proxy().equals(p.proxy()) ? p : old);
             case Event.Left(UUID id, String from, Instant lastSeen) -> {
+                offline.remove(id);
                 Presence p = presence.get(id);
                 if (p == null || !p.proxy().equals(from) || !presence.remove(id, p)) return; // moved proxies meanwhile
                 forFriendsOf(id, f -> f.seen(f.name(), f.prefix(), lastSeen), p.status() != Status.OFFLINE, false);
@@ -169,13 +188,17 @@ public final class Friends implements Network.Listener {
             case Event.Befriended(PlayerRow a, PlayerRow b, Instant since) -> {
                 requests.remove(new Request.Key(a.id(), b.id()));
                 requests.remove(new Request.Key(b.id(), a.id()));
+                offline.remove(a.id());
+                offline.remove(b.id());
                 link(a, b, since);
                 link(b, a, since);
             }
             case Event.Unfriended(UUID player, List<UUID> others) -> {
                 Profile me = profiles.get(player);
                 if (me == null) markIfLoading(player);
+                offline.remove(player);
                 for (UUID other : others) {
+                    offline.remove(other);
                     if (me != null) me.friends.remove(other);
                     Profile theirs = profiles.get(other);
                     if (theirs != null) theirs.friends.remove(player);
@@ -285,147 +308,200 @@ public final class Friends implements Network.Listener {
         }
     }
 
-    // --- commands ---
+    // --- commands (and API actions): each replies to the player and returns what happened ---
 
-    public CompletableFuture<Void> help(Online s) {
-        return reply(s, Messages.help());
+    /** Who a command is about: the name a player typed, or a UUID (API). */
+    record Target(UUID id, String name) {
+        static Target named(String name) {
+            return new Target(null, name);
+        }
+
+        static Target of(UUID id) {
+            return new Target(id, null);
+        }
+
+        boolean is(UUID otherId, String otherName) {
+            return id != null ? id.equals(otherId) : name.equalsIgnoreCase(otherName);
+        }
+
+        /** How messages name it. */
+        String label() {
+            return name != null ? name : id.toString();
+        }
     }
 
-    public CompletableFuture<Void> add(Online s, String name) {
+    public CompletableFuture<Result> help(Online s) {
+        return reply(s, Messages.help(), Result.SUCCESS);
+    }
+
+    public CompletableFuture<Result> add(Online s, Target target) {
         Profile me = profiles.get(s.id());
-        if (me == null) return reply(s, Messages.notLoaded());
-        if (s.name().equalsIgnoreCase(name)) return reply(s, Messages.addSelf());
-        return resolve(name).thenCompose(found -> {
-            if (found.isEmpty()) return reply(s, Messages.notFound(name));
-            PlayerRow target = found.get();
-            return friendCount(target.id()).thenCompose(count -> {
-                Request theirs;
-                synchronized (lock) { // all checks and the send in one step
-                    Component targetName = Messages.name(target);
-                    if (me.friends.containsKey(target.id())) return reply(s, Messages.alreadyFriends(targetName));
-                    theirs = valid(requests.get(new Request.Key(target.id(), s.id())));
-                    if (theirs == null) {
-                        if (valid(requests.get(new Request.Key(s.id(), target.id()))) != null) return reply(s, Messages.alreadySent(targetName));
-                        if (me.friends.size() >= maxFriends) return reply(s, Messages.limitSelf(maxFriends));
-                        if (count >= maxFriends) return reply(s, Messages.limitOther(targetName));
-                        emit(new Event.RequestSent(new Request(row(s), target, clock.instant().plus(requestExpiry))));
-                        return reply(s, Messages.sent(targetName, requestExpiry.toMinutes()));
-                    }
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        if (target.is(s.id(), s.name())) return reply(s, Messages.addSelf(), Result.SELF);
+        return resolve(target).thenCompose(found -> found.isEmpty()
+                ? reply(s, Messages.notFound(target.label()), Result.PLAYER_NOT_FOUND)
+                : friendCount(found.get().id()).thenComposeAsync(count -> add(s, me, found.get(), count, false), async));
+    }
+
+    /** All checks and the send in one locked step, asking plugins in between ({@code vetted}: they agreed). */
+    private CompletableFuture<Result> add(Online s, Profile me, PlayerRow target, int count, boolean vetted) {
+        Request theirs;
+        synchronized (lock) {
+            Component targetName = Messages.name(target);
+            if (me.friends.containsKey(target.id())) return reply(s, Messages.alreadyFriends(targetName), Result.ALREADY_FRIENDS);
+            theirs = valid(requests.get(new Request.Key(target.id(), s.id())));
+            if (theirs == null) {
+                if (valid(requests.get(new Request.Key(s.id(), target.id()))) != null) {
+                    return reply(s, Messages.alreadySent(targetName), Result.ALREADY_REQUESTED);
                 }
-                return accept(s, me, theirs); // both asked: just make them friends (outside the lock: it may claim)
-            });
-        });
+                if (me.friends.size() >= maxFriends) return reply(s, Messages.limitSelf(maxFriends), Result.LIMIT_REACHED);
+                if (count >= maxFriends) return reply(s, Messages.limitOther(targetName), Result.TARGET_LIMIT_REACHED);
+                if (vetted) {
+                    emit(new Event.RequestSent(new Request(row(s), target, clock.instant().plus(requestExpiry))));
+                    return reply(s, Messages.sent(targetName, requestExpiry.toMinutes()), Result.SUCCESS);
+                }
+            }
+        }
+        if (theirs != null) { // both asked: just make them friends (outside the lock: it may claim)
+            return accept(s, me, theirs).thenApply(r -> r == Result.SUCCESS ? Result.BECAME_FRIENDS : r);
+        }
+        // Plugins are asked outside the lock (their listeners may be slow), so everything is checked again after.
+        return hooks.requesting(row(s), target) ? add(s, me, target, count, true) : completedFuture(Result.CANCELLED);
     }
 
-    public CompletableFuture<Void> accept(Online s, String name) {
+    public CompletableFuture<Result> accept(Online s, Target target) {
         Profile me = profiles.get(s.id());
-        if (me == null) return reply(s, Messages.notLoaded());
-        Request r = incoming(s.id()).filter(x -> x.from().name().equalsIgnoreCase(name)).findFirst().orElse(null);
-        return r == null ? reply(s, Messages.noRequest(name)) : accept(s, me, r);
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        Request r = incoming(s.id()).filter(x -> target.is(x.from().id(), x.from().name())).findFirst().orElse(null);
+        return r == null ? reply(s, Messages.noRequest(target.label()), Result.NO_REQUEST) : accept(s, me, r);
     }
 
-    private CompletableFuture<Void> accept(Online s, Profile me, Request r) {
+    private CompletableFuture<Result> accept(Online s, Profile me, Request r) {
         PlayerRow other = r.from();
-        if (me.friends.size() >= maxFriends) return reply(s, Messages.limitSelf(maxFriends));
-        return friendCount(other.id()).thenCompose(count -> {
-            if (count >= maxFriends) return reply(s, Messages.limitOther(Messages.name(other)));
-            if (!network.claim(s.id(), other.id())) return reply(s, Messages.noRequest(other.name())); // lost a crossing accept
+        if (me.friends.size() >= maxFriends) return reply(s, Messages.limitSelf(maxFriends), Result.LIMIT_REACHED);
+        return friendCount(other.id()).thenComposeAsync(count -> {
+            if (count >= maxFriends) return reply(s, Messages.limitOther(Messages.name(other)), Result.TARGET_LIMIT_REACHED);
+            PlayerRow mine = row(s);
+            if (!hooks.befriending(mine, other)) return completedFuture(Result.CANCELLED);
+            if (!network.claim(s.id(), other.id())) return reply(s, Messages.noRequest(other.name()), Result.NO_REQUEST); // lost a crossing accept
             synchronized (lock) {
-                if (!requests.remove(r.key(), r)) return reply(s, Messages.noRequest(other.name())); // expired/raced
-                if (me.friends.containsKey(other.id())) return completedFuture(null); // crossing accepts: already done
+                if (!requests.remove(r.key(), r)) return reply(s, Messages.noRequest(other.name()), Result.NO_REQUEST); // expired/raced
+                if (me.friends.containsKey(other.id())) return completedFuture(Result.ALREADY_FRIENDS); // crossing accepts: already done
                 Instant now = clock.instant();
                 write(() -> storage.addFriendship(s.id(), other.id(), now));
-                emit(new Event.Befriended(other, row(s), now)); // tells both sides, wherever they are
-                return completedFuture(null);
+                emit(new Event.Befriended(other, mine, now)); // tells both sides, wherever they are
+                hooks.befriended(mine, other, now);
+                return completedFuture(Result.SUCCESS);
             }
-        });
+        }, async);
     }
 
-    public CompletableFuture<Void> deny(Online s, String name) {
+    public CompletableFuture<Result> deny(Online s, Target target) {
         synchronized (lock) {
-            Request r = incoming(s.id()).filter(x -> x.from().name().equalsIgnoreCase(name)).findFirst().orElse(null);
-            if (r == null || !requests.remove(r.key(), r)) return reply(s, Messages.noRequest(name));
+            Request r = incoming(s.id()).filter(x -> target.is(x.from().id(), x.from().name())).findFirst().orElse(null);
+            if (r == null || !requests.remove(r.key(), r)) return reply(s, Messages.noRequest(target.label()), Result.NO_REQUEST);
             emit(new Event.RequestDenied(r.from().id(), s.id()));
-            return reply(s, Messages.declined(Messages.name(r.from())));
+            return reply(s, Messages.declined(Messages.name(r.from())), Result.SUCCESS);
         }
     }
 
-    public CompletableFuture<Void> remove(Online s, String name) {
-        return withFriend(s, name, (_, f) -> {
+    public CompletableFuture<Result> remove(Online s, Target target) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        Friend f = find(me, target);
+        if (f == null) return reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS);
+        PlayerRow mine = row(s);
+        if (!hooks.unfriending(mine, f)) return completedFuture(Result.CANCELLED);
+        synchronized (lock) {
+            if (!me.friends.containsKey(f.id())) return reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS); // meanwhile
             write(() -> storage.removeFriendships(s.id(), List.of(f.id())));
             emit(new Event.Unfriended(s.id(), List.of(f.id())));
-            return reply(s, Messages.removed(Messages.name(f.prefix(), f.name())));
-        });
-    }
-
-    public CompletableFuture<Void> removeAll(Online s, boolean confirmed) {
-        Profile me = profiles.get(s.id());
-        if (me == null) return reply(s, Messages.notLoaded());
-        synchronized (lock) {
-            List<UUID> victims = me.friends.values().stream().filter(f -> !f.best()).map(Friend::id).toList();
-            if (victims.isEmpty()) return reply(s, Messages.nothingToRemove());
-            if (!confirmed) return reply(s, Messages.removeAllConfirm(victims.size()));
-            write(() -> storage.removeFriendships(s.id(), victims));
-            emit(new Event.Unfriended(s.id(), victims));
-            return reply(s, Messages.removedAll(victims.size()));
+            hooks.unfriended(mine, f);
+            return reply(s, Messages.removed(Messages.name(f.prefix(), f.name())), Result.SUCCESS);
         }
     }
 
-    public CompletableFuture<Void> best(Online s, String name) {
-        return withFriend(s, name, (me, f) -> {
-            boolean best = !f.best();
-            me.friends.put(f.id(), f.withBest(best));
-            write(() -> storage.setBest(s.id(), f.id(), best));
-            return reply(s, Messages.best(Messages.name(f.prefix(), f.name()), best));
+    public CompletableFuture<Result> removeAll(Online s, boolean confirmed) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        List<Friend> victims = me.friends.values().stream().filter(f -> !f.best()).toList();
+        if (victims.isEmpty()) return reply(s, Messages.nothingToRemove(), Result.NOT_FRIENDS);
+        if (!confirmed) return reply(s, Messages.removeAllConfirm(victims.size()), Result.SUCCESS);
+        PlayerRow mine = row(s);
+        Set<UUID> allowed = victims.stream().filter(f -> hooks.unfriending(mine, f)).map(Friend::id).collect(Collectors.toSet());
+        if (allowed.isEmpty()) return completedFuture(Result.CANCELLED);
+        synchronized (lock) {
+            List<Friend> removed = me.friends.values().stream().filter(f -> !f.best() && allowed.contains(f.id())).toList();
+            if (removed.isEmpty()) return reply(s, Messages.nothingToRemove(), Result.NOT_FRIENDS);
+            List<UUID> ids = removed.stream().map(Friend::id).toList();
+            write(() -> storage.removeFriendships(s.id(), ids));
+            emit(new Event.Unfriended(s.id(), ids));
+            removed.forEach(f -> hooks.unfriended(mine, f));
+            return reply(s, Messages.removedAll(ids.size()), Result.SUCCESS);
+        }
+    }
+
+    /** {@code best} null toggles. */
+    public CompletableFuture<Result> best(Online s, Target target, Boolean best) {
+        return withFriend(s, target, (me, f) -> {
+            boolean on = best != null ? best : !f.best();
+            me.friends.put(f.id(), f.withBest(on));
+            write(() -> storage.setBest(s.id(), f.id(), on));
+            return reply(s, Messages.best(Messages.name(f.prefix(), f.name()), on), Result.SUCCESS);
         });
     }
 
     /** {@code nickname} null clears it. */
-    public CompletableFuture<Void> nickname(Online s, String name, String nickname) {
-        if (nickname != null && !NICKNAME.matcher(nickname).matches()) return reply(s, Messages.invalidNickname());
-        return withFriend(s, name, (me, f) -> {
+    public CompletableFuture<Result> nickname(Online s, Target target, String nickname) {
+        if (nickname != null && !NICKNAME.matcher(nickname).matches()) return reply(s, Messages.invalidNickname(), Result.INVALID_ARGUMENT);
+        return withFriend(s, target, (me, f) -> {
             me.friends.put(f.id(), f.withNickname(nickname));
             write(() -> storage.setNickname(s.id(), f.id(), nickname));
-            return reply(s, Messages.nickname(Messages.name(f.prefix(), f.name()), nickname));
+            return reply(s, Messages.nickname(Messages.name(f.prefix(), f.name()), nickname), Result.SUCCESS);
         });
     }
 
-    public CompletableFuture<Void> toggleNotifications(Online s) {
+    public CompletableFuture<Result> toggleNotifications(Online s) {
         Profile me = profiles.get(s.id());
-        if (me == null) return reply(s, Messages.notLoaded());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
         synchronized (lock) {
             boolean enabled = !me.notifications;
             me.notifications = enabled;
             write(() -> storage.setNotifications(s.id(), enabled));
-            return reply(s, Messages.notifications(enabled));
+            return reply(s, Messages.notifications(enabled), Result.SUCCESS);
         }
     }
 
     /** {@code status} null shows the current status with clickable options. */
-    public CompletableFuture<Void> status(Online s, Status status) {
+    public CompletableFuture<Result> status(Online s, Status status) {
+        Presence current = presence.get(s.id());
+        if (!profiles.containsKey(s.id()) || current == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        if (status == null) return reply(s, Messages.statusMenu(current.status()), Result.SUCCESS);
+        if (status != current.status() && !hooks.statusChanging(row(s), current.status(), status)) {
+            return completedFuture(Result.CANCELLED);
+        }
         synchronized (lock) {
-            Presence current = presence.get(s.id());
-            if (!profiles.containsKey(s.id()) || current == null) return reply(s, Messages.notLoaded());
-            if (status == null) return reply(s, Messages.statusMenu(current.status()));
+            Presence now = presence.get(s.id()); // re-read: plugins were asked outside the lock
+            if (!profiles.containsKey(s.id()) || now == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
             write(() -> storage.setStatus(s.id(), status));
-            emit(new Event.Updated(s.id(), current.withStatus(status)));
-            return reply(s, Messages.statusSet(status));
+            emit(new Event.Updated(s.id(), now.withStatus(status)));
+            return reply(s, Messages.statusSet(status), Result.SUCCESS);
         }
     }
 
-    public CompletableFuture<Void> list(Online s, int page, boolean bestOnly) {
+    public CompletableFuture<Result> list(Online s, int page, boolean bestOnly) {
         Profile me = profiles.get(s.id());
-        if (me == null) return reply(s, Messages.notLoaded());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
         List<Messages.Entry> entries = me.friends.values().stream()
                 .filter(f -> !bestOnly || f.best())
                 .map(this::entry)
                 .sorted(LIST_ORDER)
                 .toList();
-        if (entries.isEmpty()) return reply(s, Messages.noFriends(bestOnly));
+        if (entries.isEmpty()) return reply(s, Messages.noFriends(bestOnly), Result.SUCCESS);
         int pages = (entries.size() + PAGE_SIZE - 1) / PAGE_SIZE;
         int p = Math.clamp(page, 1, pages);
         List<Messages.Entry> shown = entries.subList((p - 1) * PAGE_SIZE, Math.min(entries.size(), p * PAGE_SIZE));
-        return reply(s, Messages.list(shown, p, pages, bestOnly, clock.instant()));
+        return reply(s, Messages.list(shown, p, pages, bestOnly, clock.instant()), Result.SUCCESS);
     }
 
     /** Best friends first, then online (by name), then offline (most recently seen first). */
@@ -443,11 +519,11 @@ public final class Friends implements Network.Listener {
                 : new Messages.Entry(f, p.status(), p.server());
     }
 
-    public CompletableFuture<Void> requests(Online s) {
+    public CompletableFuture<Result> requests(Online s) {
         List<Request> in = incoming(s.id()).toList();
-        List<Request> out = requests.values().stream().filter(r -> r.from().id().equals(s.id()) && valid(r) != null).toList();
-        if (in.isEmpty() && out.isEmpty()) return reply(s, Messages.noRequests());
-        return reply(s, Messages.requests(in, out, clock.instant()));
+        List<Request> out = outgoing(s.id()).toList();
+        if (in.isEmpty() && out.isEmpty()) return reply(s, Messages.noRequests(), Result.SUCCESS);
+        return reply(s, Messages.requests(in, out, clock.instant()), Result.SUCCESS);
     }
 
     // --- tab completion ---
@@ -461,7 +537,7 @@ public final class Friends implements Network.Listener {
         return incoming(id).map(r -> r.from().name()).toList();
     }
 
-    /** A local player's cached friends (tests compare this with the database). */
+    /** A local player's cached friends (the API's reads; tests compare this with the database). */
     List<Friend> cachedFriends(UUID id) {
         Profile p = profiles.get(id);
         return p == null ? List.of() : List.copyOf(p.friends.values());
@@ -472,25 +548,84 @@ public final class Friends implements Network.Listener {
         return presence.values().stream().filter(p -> p.status() != Status.OFFLINE).map(Presence::name).toList();
     }
 
-    // --- helpers ---
+    // --- API reads (memory, except friendsOf) ---
 
-    private interface FriendAction {
-        CompletableFuture<Void> apply(Profile me, Friend friend);
+    boolean loaded(UUID id) {
+        return profiles.containsKey(id);
     }
 
-    private CompletableFuture<Void> withFriend(Online s, String name, FriendAction action) {
-        Profile me = profiles.get(s.id());
-        if (me == null) return reply(s, Messages.notLoaded());
-        synchronized (lock) { // look up and change in one step
-            return me.friends.values().stream().filter(f -> f.name().equalsIgnoreCase(name)).findFirst()
-                    .map(f -> action.apply(me, f))
-                    .orElseGet(() -> reply(s, Messages.notFriend(name)));
+    /** From memory: false unless {@code a} or {@code b} is loaded here. */
+    boolean friendsWith(UUID a, UUID b) {
+        Profile p = profiles.get(a);
+        if (p != null) return p.friends.containsKey(b);
+        Profile q = profiles.get(b);
+        return q != null && q.friends.containsKey(a);
+    }
+
+    /** Where the player is on the network, or null if offline. */
+    Presence presenceOf(UUID id) {
+        return presence.get(id);
+    }
+
+    /** Any player's friends: the profile if loaded here, else the database (briefly cached, see {@link #offline}). */
+    CompletableFuture<List<Friend>> friendsOf(UUID id) {
+        Profile p = profiles.get(id);
+        if (p != null) return completedFuture(List.copyOf(p.friends.values()));
+        Instant now = clock.instant();
+        Cached cached = offline.get(id);
+        if (cached != null && now.isBefore(cached.expires())) return cached.friends();
+        if (offline.size() >= OFFLINE_MAX) evictOffline(now);
+        // Cache first, then queue the read: a change that drops the entry meanwhile has queued its write before
+        // dropping it, so any entry still cached was read after that write.
+        CompletableFuture<List<Friend>> read = new CompletableFuture<>();
+        Cached entry = new Cached(read, now.plus(OFFLINE_TTL));
+        offline.put(id, entry);
+        db(() -> List.copyOf(storage.load(id).friends())).whenComplete((friends, e) -> {
+            if (e == null) {
+                read.complete(friends);
+            } else {
+                offline.remove(id, entry); // don't cache failures
+                read.completeExceptionally(e);
+            }
+        });
+        return read;
+    }
+
+    private void evictOffline(Instant now) {
+        offline.values().removeIf(c -> !now.isBefore(c.expires()));
+        for (var it = offline.keySet().iterator(); offline.size() >= OFFLINE_MAX && it.hasNext(); ) {
+            it.next();
+            it.remove();
         }
     }
 
-    // ponytail: linear scan over all pending requests; index by receiver if request volume ever matters.
-    private Stream<Request> incoming(UUID id) {
+    // --- helpers ---
+
+    private interface FriendAction {
+        CompletableFuture<Result> apply(Profile me, Friend friend);
+    }
+
+    private CompletableFuture<Result> withFriend(Online s, Target target, FriendAction action) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        synchronized (lock) { // look up and change in one step
+            Friend f = find(me, target);
+            return f != null ? action.apply(me, f) : reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS);
+        }
+    }
+
+    private static Friend find(Profile me, Target target) {
+        if (target.id() != null) return me.friends.get(target.id());
+        return me.friends.values().stream().filter(f -> f.name().equalsIgnoreCase(target.name())).findFirst().orElse(null);
+    }
+
+    // ponytail: linear scans over all pending requests; index by player if request volume ever matters.
+    Stream<Request> incoming(UUID id) {
         return requests.values().stream().filter(r -> r.to().id().equals(id) && valid(r) != null);
+    }
+
+    Stream<Request> outgoing(UUID id) {
+        return requests.values().stream().filter(r -> r.from().id().equals(id) && valid(r) != null);
     }
 
     private Request valid(Request r) {
@@ -502,7 +637,14 @@ public final class Friends implements Network.Listener {
     }
 
     /** Online anywhere on the network first (no query), then the database. */
-    private CompletableFuture<Optional<PlayerRow>> resolve(String name) {
+    private CompletableFuture<Optional<PlayerRow>> resolve(Target target) {
+        if (target.id() != null) {
+            Presence p = presence.get(target.id());
+            return p != null
+                    ? completedFuture(Optional.of(new PlayerRow(target.id(), p.name(), p.prefix(), clock.instant())))
+                    : db(() -> storage.player(target.id()));
+        }
+        String name = target.name();
         if (!NAME.matcher(name).matches()) return completedFuture(Optional.empty());
         for (var e : presence.entrySet()) { // ponytail: O(online players), fine for a typed command
             Presence p = e.getValue();
@@ -523,9 +665,9 @@ public final class Friends implements Network.Listener {
         if (p != null) p.audience.sendMessage(message);
     }
 
-    private static CompletableFuture<Void> reply(Online s, Component message) {
+    private static CompletableFuture<Result> reply(Online s, Component message, Result result) {
         s.audience().sendMessage(message);
-        return completedFuture(null);
+        return completedFuture(result);
     }
 
     private <T> CompletableFuture<T> db(SqlCall<T> call) {

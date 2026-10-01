@@ -1,0 +1,2 @@
+{"id": "friends-probe", "name": "FriendsProbe", "version": "1", "main": "com.friends.probe.VelocityProbe",
+ "dependencies": [{"id": "friends", "optional": false}]}

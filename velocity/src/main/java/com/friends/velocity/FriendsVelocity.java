@@ -10,6 +10,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -44,13 +47,15 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
-@Plugin(id = "friends", name = "Friends", version = "0.4.0",
+@Plugin(id = "friends", name = "Friends", version = "0.5.0",
         description = "Hypixel-style friends system",
         dependencies = @Dependency(id = "luckperms", optional = true))
 public final class FriendsVelocity {
     private final ProxyServer proxy;
     private final Logger log;
     private final Path dataDir;
+    // Commands may wait on SQL and on plugins' event listeners: run them on virtual threads, not Velocity's.
+    private final ExecutorService commandThreads = Executors.newVirtualThreadPerTaskExecutor();
     private FriendsRuntime runtime;
     private VelocityPlatform platform;
 
@@ -70,7 +75,7 @@ public final class FriendsVelocity {
             Network network = RedisNetwork.open(settings, log);
             Function<UUID, String> prefixes = proxy.getPluginManager().isLoaded("luckperms") ? LuckPermsPrefix::of : _ -> null;
             platform = new VelocityPlatform(proxy, prefixes);
-            runtime = new FriendsRuntime(settings, storage, network, platform, log);
+            runtime = new FriendsRuntime(settings, storage, network, platform, new VelocityHooks(proxy.getEventManager()::fire), log);
             log.info("Friends enabled (proxy id: {})", network.proxyId());
         } catch (IOException | SQLException | IllegalArgumentException e) {
             log.error("Friends is disabled: {}", e.getMessage(), e);
@@ -78,9 +83,9 @@ public final class FriendsVelocity {
             return;
         }
         CommandManager commands = proxy.getCommandManager();
-        commands.register(commands.metaBuilder("friend").aliases("f", "friends").plugin(this).build(), new Cmd(runtime.command, platform, null));
-        commands.register(commands.metaBuilder("fl").plugin(this).build(), new Cmd(runtime.command, platform, "list"));
-        commands.register(commands.metaBuilder("status").plugin(this).build(), new Cmd(runtime.command, platform, "status"));
+        commands.register(commands.metaBuilder("friend").aliases("f", "friends").plugin(this).build(), new Cmd(runtime.command, platform, null, commandThreads));
+        commands.register(commands.metaBuilder("fl").plugin(this).build(), new Cmd(runtime.command, platform, "list", commandThreads));
+        commands.register(commands.metaBuilder("status").plugin(this).build(), new Cmd(runtime.command, platform, "status", commandThreads));
         proxy.getScheduler().buildTask(this, runtime.friends::expireRequests).repeat(Duration.ofSeconds(1)).schedule();
     }
 
@@ -105,6 +110,7 @@ public final class FriendsVelocity {
 
     @Subscribe
     public void onShutdown(ProxyShutdownEvent event) {
+        commandThreads.shutdown();
         if (runtime != null) runtime.close(); // players are already disconnected
     }
 
@@ -144,11 +150,12 @@ public final class FriendsVelocity {
     }
 
     /** Routes /friend, /fl ("list") and /status ("status") into the shared command parser. */
-    record Cmd(FriendCommand command, VelocityPlatform platform, String sub) implements SimpleCommand {
+    record Cmd(FriendCommand command, VelocityPlatform platform, String sub, Executor commands) implements SimpleCommand {
         @Override
         public void execute(Invocation invocation) {
             if (invocation.source() instanceof Player p) {
-                command.execute(platform.online(p), FriendCommand.withSub(sub, invocation.arguments()));
+                Platform.Online online = platform.online(p);
+                commands.execute(() -> command.execute(online, FriendCommand.withSub(sub, invocation.arguments())));
             } else {
                 invocation.source().sendMessage(Component.text("Only players can use this command.", NamedTextColor.RED));
             }

@@ -148,7 +148,7 @@ class ConsistencyTest {
         for (String name : crowd) online.put(name, h.join(name));
 
         ExecutorService pool = Executors.newFixedThreadPool(8);
-        List<CompletableFuture<Void>> commands = new ArrayList<>();
+        List<CompletableFuture<?>> commands = new ArrayList<>();
         Set<Throwable> errors = new HashSet<>();
         for (int t = 0; t < 8; t++) {
             Random random = new Random(t);

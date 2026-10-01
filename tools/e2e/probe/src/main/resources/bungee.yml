@@ -1,0 +1,4 @@
+name: FriendsProbe
+main: com.friends.probe.BungeeProbe
+version: "1"
+depends: [Friends]

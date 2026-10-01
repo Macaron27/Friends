@@ -21,4 +21,6 @@ FRIENDS_MYSQL=127.0.0.1:3306/friends:root: FRIENDS_REDIS=127.0.0.1:6379 python3 
 
 Scenarios: `paper-<version>`, `load-<version>` (enables and answers the console only), `bungee[-<version>]`,
 `velocity[-<version>]` (proxy plugin, players and a Paper backend of that version, default 1.8.8), `mixed`
-(Alice through BungeeCord, Bob through Velocity, sharing MySQL and Redis).
+(Alice through BungeeCord, Bob through Velocity, sharing MySQL and Redis), `api-<version>` / `api-bungee` /
+`api-velocity` (another plugin, [`probe`](probe), using the API: its events, one cancelled, reads and actions from its
+listeners and, on Paper, from the server thread; needs `./gradlew :probe:jar`).
