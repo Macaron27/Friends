@@ -13,7 +13,7 @@ configurations.testImplementation { extendsFrom(mockServer) }
 val testRuntime: Configuration = configurations.create("testRuntime") { extendsFrom(mockServer) }
 
 dependencies {
-    implementation(project(":common"))
+    implementation(project(":core"))
     // The oldest supported API: anything that compiles here exists on every Paper from 1.8.8 to 26.x.
     compileOnly("org.github.paperspigot:paperspigot-api:1.8.8-R0.1-SNAPSHOT")
     "bootstrapCompileOnly"("org.github.paperspigot:paperspigot-api:1.8.8-R0.1-SNAPSHOT")
@@ -35,7 +35,7 @@ dependencies {
     "mockServer"(platform("org.junit:junit-bom:6.1.3"))
     "mockServer"("org.junit.jupiter:junit-jupiter")
     "testRuntime"(project(":api"))                       // the bootstrap layer's part
-    "testRuntime"("org.xerial:sqlite-jdbc:3.53.4.0")      // servers bring their own (common's version)
+    "testRuntime"("org.xerial:sqlite-jdbc:3.53.4.0")      // servers bring their own (core's version)
     "testRuntime"("org.junit.platform:junit-platform-launcher")
 }
 
@@ -79,7 +79,7 @@ val pluginJar = tasks.register<Jar>("pluginJar") {
         exclude("META-INF/**", "com/friends/api/velocity/**", "com/friends/api/bungee/**") // the proxies' events
     }
     from(tasks.processResources) { include("plugin.yml") }
-    from(project(":common").file("src/main/resources/config.yml"))
+    from(project(":core").file("src/main/resources/config.yml"))
     from(tasks.shadowJar) { rename { "friends-paper-impl.jar" } }
     // No NMS/CraftBukkit use: tell Paper 1.20.5+ not to spend startup time remapping this jar.
     manifest { attributes("paperweight-mappings-namespace" to "mojang") }

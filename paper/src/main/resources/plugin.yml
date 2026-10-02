@@ -5,6 +5,8 @@ version: ${version}
 api-version: "1.13"
 description: Hypixel-style friends system
 softdepend: [LuckPerms]
+# Folia (regionized Paper): Friends runs off the server threads and uses no Bukkit scheduler.
+folia-supported: true
 commands:
   friend:
     description: Friends commands

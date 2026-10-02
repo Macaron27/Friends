@@ -23,14 +23,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.friends.api.FriendsAPI;
-import com.friends.common.ChatSessions;
-import com.friends.common.FriendCommand;
-import com.friends.common.FriendsRuntime;
-import com.friends.common.LuckPermsPrefix;
-import com.friends.common.Network;
-import com.friends.common.Platform.Online;
-import com.friends.common.Settings;
-import com.friends.common.Storage;
+import com.friends.core.ChatSessions;
+import com.friends.core.FriendCommand;
+import com.friends.core.FriendsRuntime;
+import com.friends.core.LuckPermsPrefix;
+import com.friends.core.Network;
+import com.friends.core.Platform.Online;
+import com.friends.core.Settings;
+import com.friends.core.Storage;
 
 import net.md_5.bungee.api.chat.BaseComponent;
 
@@ -84,7 +84,6 @@ public final class PaperFriends implements Listener {
                 (_, e) -> { if (e instanceof PlayerJoinEvent join) join(join.getPlayer()); }, plugin);
         events.registerEvent(PlayerQuitEvent.class, this, EventPriority.MONITOR,
                 (_, e) -> { if (e instanceof PlayerQuitEvent quit) leave(quit.getPlayer()); }, plugin);
-        plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, runtime.friends::expireRequests, 20L, 20L);
         // Also FriendsAPI.get(). Bukkit drops the service by itself when the plugin disables.
         plugin.getServer().getServicesManager().register(FriendsAPI.class, runtime.api, plugin, ServicePriority.Normal);
         for (Player p : plugin.getServer().getOnlinePlayers()) join(p); // enabled while players are online (/reload)

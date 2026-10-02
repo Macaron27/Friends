@@ -5,7 +5,6 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
-import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -19,14 +18,14 @@ import org.slf4j.Logger;
 import org.spongepowered.configurate.ConfigurationNode;
 import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
 
-import com.friends.common.FriendCommand;
-import com.friends.common.FriendsRuntime;
-import com.friends.common.LuckPermsPrefix;
-import com.friends.common.Network;
-import com.friends.common.Platform;
-import com.friends.common.RedisNetwork;
-import com.friends.common.Settings;
-import com.friends.common.Storage;
+import com.friends.core.FriendCommand;
+import com.friends.core.FriendsRuntime;
+import com.friends.core.LuckPermsPrefix;
+import com.friends.core.Network;
+import com.friends.core.Platform;
+import com.friends.core.RedisNetwork;
+import com.friends.core.Settings;
+import com.friends.core.Storage;
 import com.google.inject.Inject;
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.SimpleCommand;
@@ -47,7 +46,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
-@Plugin(id = "friends", name = "Friends", version = "0.5.0",
+@Plugin(id = "friends", name = "Friends", version = BuildConstants.VERSION,
         description = "Hypixel-style friends system",
         dependencies = @Dependency(id = "luckperms", optional = true))
 public final class FriendsVelocity {
@@ -86,7 +85,6 @@ public final class FriendsVelocity {
         commands.register(commands.metaBuilder("friend").aliases("f", "friends").plugin(this).build(), new Cmd(runtime.command, platform, null, commandThreads));
         commands.register(commands.metaBuilder("fl").plugin(this).build(), new Cmd(runtime.command, platform, "list", commandThreads));
         commands.register(commands.metaBuilder("status").plugin(this).build(), new Cmd(runtime.command, platform, "status", commandThreads));
-        proxy.getScheduler().buildTask(this, runtime.friends::expireRequests).repeat(Duration.ofSeconds(1)).schedule();
     }
 
     @Subscribe

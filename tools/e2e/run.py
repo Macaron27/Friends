@@ -2,8 +2,9 @@
 
   python3 tools/e2e/run.py <jars-dir> [scenario ...]
 
-<jars-dir> holds the downloaded servers: paper-<version>.jar, BungeeCord.jar, velocity.jar (see README).
+<jars-dir> holds the downloaded servers: paper-<version>.jar, folia-<version>.jar, BungeeCord.jar, velocity.jar (see README).
 Scenarios: paper-<version> (full friend flow with bot players: 1.8.8, 1.12.2, 1.16.5, 1.20.6, 1.21.11, 26.3),
+folia-<version> (the same flow, same Paper jar, on Folia; e.g. 1.21.11),
 load-<version> (plugin enables and answers the console), bungee[-<version>] / velocity[-<version>] (the proxy
 plugin with players and a Paper backend of that version, default 1.8.8), mixed (BungeeCord + Velocity sharing MySQL and Redis; needs
 FRIENDS_MYSQL=host:port/db:user:password and FRIENDS_REDIS=host:port), api-<version> / api-bungee / api-velocity (another
@@ -21,8 +22,7 @@ from mcbot import Bot  # noqa: E402
 import servers  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-VERSION = "0.5.0"
-PLUGIN = {m: os.path.join(ROOT, m, "build", "libs", f"friends-{m}-{VERSION}.jar") for m in ("paper", "bungee", "velocity")}
+PLUGIN = {m: os.path.join(ROOT, "builds", f"friends-{m}.jar") for m in ("paper", "bungee", "velocity")}
 PROBE = os.path.join(ROOT, "tools", "e2e", "probe", "build", "libs", "friends-probe.jar")
 PROTOCOL = {"1.8.8": 47, "1.12.2": 340, "1.16.5": 754, "1.20.6": 766, "1.21.11": 774, "26.3": 777}
 PAUSE = 0.4  # keeps well under Spigot's chat spam filter
@@ -82,9 +82,10 @@ def mysql_settings():
             "mysql.database": database, "mysql.user": user, "mysql.password": password}
 
 
-def scenario_paper(jars, version):
-    port = 25700 + list(PROTOCOL).index(version)
-    s = servers.paper(os.path.join(jars, f"e2e-paper-{version}"), os.path.join(jars, f"paper-{version}.jar"), port, PLUGIN["paper"])
+def scenario_paper(jars, version, kind="paper"):
+    """`kind` "folia": the same plugin jar on Folia (regionized Paper, no Bukkit scheduler)."""
+    port = (25700 if kind == "paper" else 25770) + list(PROTOCOL).index(version)
+    s = servers.paper(os.path.join(jars, f"e2e-{kind}-{version}"), os.path.join(jars, f"{kind}-{version}.jar"), port, PLUGIN["paper"])
     if version == "1.12.2" and platform.system() == "Darwin" and platform.machine() == "arm64":
         # Paper 1.12.2's own sqlite-jdbc (3.21.0.1) has no Apple Silicon native; Linux is fine. Use MySQL here.
         servers.plugin_config(s.folder, **mysql_settings())
@@ -229,8 +230,9 @@ def main():
     for name in wanted:
         start = time.time()
         try:
-            if name.startswith("paper-"):
-                scenario_paper(jars, name[6:])
+            if name.startswith(("paper-", "folia-")):
+                kind, _, version = name.partition("-")
+                scenario_paper(jars, version, kind)
             elif name.startswith("api-"):
                 scenario_api(jars, name[4:])
             elif name.startswith("load-"):

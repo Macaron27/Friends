@@ -3,10 +3,18 @@ plugins {
     id("com.gradleup.shadow")
 }
 
-// Project version (root build) must match @Plugin(version) in FriendsVelocity.
+// @Plugin(version) must be a compile-time constant: generate it from the project version (one source of truth).
+val generateConstants = tasks.register<Copy>("generateConstants") {
+    val pluginVersion = project.version.toString()
+    inputs.property("version", pluginVersion)
+    from("src/main/templates")
+    into(layout.buildDirectory.dir("generated/sources/templates"))
+    expand("version" to pluginVersion)
+}
+sourceSets.main { java.srcDir(generateConstants) }
 
 dependencies {
-    implementation(project(":common"))
+    implementation(project(":core"))
     compileOnly("com.velocitypowered:velocity-api:4.2.0")
     annotationProcessor("com.velocitypowered:velocity-api:4.2.0") // generates velocity-plugin.json
     compileOnly("net.luckperms:api:5.5")

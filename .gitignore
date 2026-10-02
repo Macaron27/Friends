@@ -1,12 +1,31 @@
+# Build outputs (the jars to ship are written to builds/)
 .gradle/
 build/
+builds/
 bin/
+out/
+target/
+*.log
+
+# IDEs and OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Claude Code
+.claude/
+claude.json
+.claude.json
+CLAUDE.local.md
+
+# Tests stay local (not published)
+**/src/test/
+__pycache__/
+*.pyc
+
+# Local data and backups
 .backup/
 *.db
 *.db-shm
 *.db-wal
-.idea/
-*.iml
-.DS_Store
-__pycache__/
-*.pyc

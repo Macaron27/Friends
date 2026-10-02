@@ -13,9 +13,9 @@ import com.friends.api.bukkit.FriendRemoveEvent;
 import com.friends.api.bukkit.FriendRemovedEvent;
 import com.friends.api.bukkit.FriendRequestSendEvent;
 import com.friends.api.bukkit.FriendStatusChangeEvent;
-import com.friends.common.Friend;
-import com.friends.common.Hooks;
-import com.friends.common.Storage.PlayerRow;
+import com.friends.core.Friend;
+import com.friends.core.Hooks;
+import com.friends.core.Storage.PlayerRow;
 
 /** The core's hooks as Bukkit events, all asynchronous: hooks never run on the server thread. */
 final class BukkitHooks implements Hooks {
