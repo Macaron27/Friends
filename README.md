@@ -17,7 +17,8 @@ Modules (one folder per part; a new platform gets its own top-level folder next 
 ./gradlew build   # tests, then builds/friends-paper.jar, friends-velocity.jar, friends-bungee.jar, friends-api.jar
 ```
 
-Put the jar for your platform in `plugins/`. Every server/proxy must run **Java 25** (Velocity 4.2 and Paper 26.x
+Or download the jars from the [GitHub releases](https://github.com/Macaron27/Friends/releases) (each release builds and
+attaches them). Put the jar for your platform in `plugins/`. Every server/proxy must run **Java 25** (Velocity 4.2 and Paper 26.x
 require it anyway; older Paper versions run on it, see below). Add `--enable-native-access=ALL-UNNAMED` to the JVM
 flags to silence the JDK warning about SQLite's native library.
 
