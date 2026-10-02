@@ -1,0 +1,29 @@
+name: release
+
+# Publishing a GitHub release builds its tag and attaches the jars from builds/ to that release.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # upload release assets
+
+jobs:
+  jars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: gradle/actions/setup-gradle@v6
+      # A v0.6.0 release must not get 0.5.0 jars: the tag has to match the project version.
+      - run: 'grep -q "version = \"${TAG#v}\"" build.gradle.kts || { echo "tag $TAG does not match the project version"; exit 1; }'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+      - run: ./gradlew build
+      - run: gh release upload "$TAG" builds/*.jar --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}

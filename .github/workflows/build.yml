@@ -19,8 +19,5 @@ jobs:
           java-version: "25"
       - uses: gradle/actions/setup-gradle@v6
       # Test sources stay local (not in the repository): this compiles everything and checks the shipped jars.
+      # The jars themselves are attached to GitHub releases (release.yml), not to PR or push runs.
       - run: ./gradlew build
-      - uses: actions/upload-artifact@v7
-        with:
-          name: friends-plugins
-          path: builds/*.jar
