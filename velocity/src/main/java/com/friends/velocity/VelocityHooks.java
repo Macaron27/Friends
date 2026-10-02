@@ -11,9 +11,9 @@ import com.friends.api.velocity.FriendRemoveEvent;
 import com.friends.api.velocity.FriendRemovedEvent;
 import com.friends.api.velocity.FriendRequestSendEvent;
 import com.friends.api.velocity.FriendStatusChangeEvent;
-import com.friends.common.Friend;
-import com.friends.common.Hooks;
-import com.friends.common.Storage.PlayerRow;
+import com.friends.core.Friend;
+import com.friends.core.Hooks;
+import com.friends.core.Storage.PlayerRow;
 import com.velocitypowered.api.event.ResultedEvent;
 
 /** The core's hooks as Velocity events. Hooks run on Friends' threads, so waiting for listeners blocks nothing of Velocity's. */

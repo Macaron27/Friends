@@ -8,21 +8,20 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.friends.common.ChatSessions;
-import com.friends.common.FriendCommand;
-import com.friends.common.FriendsRuntime;
-import com.friends.common.LuckPermsPrefix;
-import com.friends.common.Network;
-import com.friends.common.Platform.Online;
-import com.friends.common.RedisNetwork;
-import com.friends.common.Settings;
-import com.friends.common.Storage;
+import com.friends.core.ChatSessions;
+import com.friends.core.FriendCommand;
+import com.friends.core.FriendsRuntime;
+import com.friends.core.LuckPermsPrefix;
+import com.friends.core.Network;
+import com.friends.core.Platform.Online;
+import com.friends.core.RedisNetwork;
+import com.friends.core.Settings;
+import com.friends.core.Storage;
 
 import net.md_5.bungee.api.ChatColor;
 import net.md_5.bungee.api.CommandSender;
@@ -74,7 +73,6 @@ public final class FriendsBungee extends Plugin implements Listener {
         plugins.registerCommand(this, new Cmd("fl", "list"));
         plugins.registerCommand(this, new Cmd("status", "status"));
         plugins.registerListener(this, this);
-        getProxy().getScheduler().schedule(this, runtime.friends::expireRequests, 1, 1, TimeUnit.SECONDS);
         for (ProxiedPlayer p : getProxy().getPlayers()) connect(p, () -> {}); // enabled while players are online
     }
 

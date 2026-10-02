@@ -146,7 +146,7 @@ def plugin_config(folder, **values):
     for sub in ("Friends", "friends"):
         path = os.path.join(folder, "plugins", sub)
         os.makedirs(path, exist_ok=True)
-        with open(os.path.join(os.path.dirname(__file__), "..", "..", "common", "src", "main", "resources", "config.yml")) as f:
+        with open(os.path.join(os.path.dirname(__file__), "..", "..", "core", "src", "main", "resources", "config.yml")) as f:
             config = yaml.safe_load(f)
         for key, value in values.items():
             node = config

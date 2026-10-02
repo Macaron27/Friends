@@ -4,7 +4,7 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":common"))
+    implementation(project(":core"))
     compileOnly("net.md-5:bungeecord-api:1.21-R0.4")
     compileOnly("net.luckperms:api:5.5")
 

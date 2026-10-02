@@ -10,9 +10,9 @@ import com.friends.api.bungee.FriendRemoveEvent;
 import com.friends.api.bungee.FriendRemovedEvent;
 import com.friends.api.bungee.FriendRequestSendEvent;
 import com.friends.api.bungee.FriendStatusChangeEvent;
-import com.friends.common.Friend;
-import com.friends.common.Hooks;
-import com.friends.common.Storage.PlayerRow;
+import com.friends.core.Friend;
+import com.friends.core.Hooks;
+import com.friends.core.Storage.PlayerRow;
 
 import net.md_5.bungee.api.plugin.Cancellable;
 import net.md_5.bungee.api.plugin.Event;
