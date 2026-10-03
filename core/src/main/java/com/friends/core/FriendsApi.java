@@ -13,6 +13,7 @@ import java.util.function.Function;
 import com.friends.api.Friend;
 import com.friends.api.FriendRequest;
 import com.friends.api.FriendsAPI;
+import com.friends.api.PlayerActivity;
 import com.friends.api.Result;
 import com.friends.api.Status;
 import com.friends.core.Friends.Target;
@@ -55,6 +56,11 @@ public final class FriendsApi implements FriendsAPI {
     @Override
     public Optional<String> getServer(UUID player) {
         return presence(player).filter(p -> p.status() != Status.OFFLINE).map(Presence::server);
+    }
+
+    @Override
+    public Optional<PlayerActivity> getActivity(UUID player) {
+        return presence(player).filter(p -> p.status() != Status.OFFLINE).map(Presence::activity);
     }
 
     @Override

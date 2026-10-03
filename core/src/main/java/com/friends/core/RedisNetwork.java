@@ -19,10 +19,12 @@ import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 
+import com.friends.api.PlayerActivity;
 import com.friends.core.Storage.PlayerRow;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonDeserializer;
@@ -66,6 +68,20 @@ public final class RedisNetwork implements Network {
     static final Gson GSON = new GsonBuilder()
             .registerTypeAdapter(Instant.class, (JsonSerializer<Instant>) (i, _, _) -> new JsonPrimitive(i.toEpochMilli()))
             .registerTypeAdapter(Instant.class, (JsonDeserializer<Instant>) (j, _, _) -> Instant.ofEpochMilli(j.getAsLong()))
+            // Through the constructor: PlayerActivity is an immutable API class, not a record Gson could build.
+            .registerTypeAdapter(PlayerActivity.class, (JsonSerializer<PlayerActivity>) (a, _, _) -> {
+                JsonObject o = new JsonObject();
+                o.addProperty("game", a.getGame());
+                o.addProperty("mode", a.getMode());
+                return o;
+            })
+            .registerTypeAdapter(PlayerActivity.class, (JsonDeserializer<PlayerActivity>) (j, _, _) -> {
+                JsonObject o = j.getAsJsonObject();
+                JsonElement game = o.get("game");
+                JsonElement mode = o.get("mode");
+                if (game == null || !game.isJsonPrimitive()) throw new JsonParseException("activity without a game: " + j);
+                return new PlayerActivity(game.getAsString(), mode == null || mode.isJsonNull() ? null : mode.getAsString());
+            })
             .create();
     private final ExecutorService outbound = single("friends-redis-out"); // keeps our writes + publishes in order
     private final ExecutorService inbound = single("friends-redis-in");   // keeps resyncs + received events in order
@@ -252,7 +268,7 @@ public final class RedisNetwork implements Network {
             case Event.RequestDenied(UUID from, UUID to) -> redis.del(requestKey(from, to));
             case Event.Befriended(PlayerRow a, PlayerRow b, Instant _) ->
                     redis.del(requestKey(a.id(), b.id()), requestKey(b.id(), a.id()));
-            case Event.Unfriended _, Event.ProxyDown _ -> {}
+            case Event.Unfriended _, Event.ProxyDown _, Event.PrivateMessage _ -> {}
         }
     }
 

@@ -24,6 +24,7 @@ import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 
+import com.friends.api.PlayerActivity;
 import com.friends.api.Result;
 import com.friends.api.Status;
 import com.friends.core.Platform.Online;
@@ -42,12 +43,16 @@ public final class Friends implements Network.Listener {
     public static final int PAGE_SIZE = 10;
     private static final Pattern NAME = Pattern.compile("[\\w.*]{1,16}");
     private static final Pattern NICKNAME = Pattern.compile("[\\p{L}\\p{N}_ ]{1,16}");
+    // Section signs (legacy colour codes) and control characters: a modified client could send them, and chat
+    // clients render them inside plain text. The protocol already caps chat at 256 characters.
+    private static final Pattern UNPRINTABLE = Pattern.compile("[\u00a7\\p{Cntrl}]");
 
     /** Cached state of a player on this proxy. {@code audience} is also the session identity. */
     static final class Profile {
         final Audience audience;
         final Map<UUID, Friend> friends = new ConcurrentHashMap<>();
         volatile boolean notifications;
+        volatile Target replyTo; // who /r answers: the last private message sent or received (id and name)
 
         Profile(Audience audience, Storage.Loaded data) {
             this.audience = audience;
@@ -72,6 +77,7 @@ public final class Friends implements Network.Listener {
     private final Clock clock;
     private final Duration requestExpiry;
     private final int maxFriends;
+    private final Activities activities;
     private final Hooks hooks;
     private final Executor async; // asks plugins (hooks) off the database thread
     private final Logger log;
@@ -97,7 +103,7 @@ public final class Friends implements Network.Listener {
 
     /** {@code db} runs SQL in order, one task at a time; {@code async} runs whatever asks plugins (any threads). */
     public Friends(Storage storage, Platform platform, Network network, Executor db, Executor async, Clock clock,
-                   Duration requestExpiry, int maxFriends, Hooks hooks, Logger log) {
+                   Duration requestExpiry, int maxFriends, Activities activities, Hooks hooks, Logger log) {
         this.storage = storage;
         this.platform = platform;
         this.network = network;
@@ -106,6 +112,7 @@ public final class Friends implements Network.Listener {
         this.clock = clock;
         this.requestExpiry = requestExpiry;
         this.maxFriends = maxFriends;
+        this.activities = activities;
         this.hooks = hooks;
         this.async = async;
         this.log = log;
@@ -205,6 +212,15 @@ public final class Friends implements Network.Listener {
                     else markIfLoading(other);
                 }
             }
+            case Event.PrivateMessage(PlayerRow from, UUID to, String text) -> {
+                // Delivered whatever this proxy thinks of the friendship: the sender's proxy checked it, and a
+                // Befriended published through its SQL queue may still be on its way here.
+                Profile p = profiles.get(to);
+                if (p == null) return; // on another proxy (or just left)
+                p.replyTo = new Target(from.id(), from.name());
+                Friend view = p.friends.get(from.id());
+                p.audience.sendMessage(Messages.messageFrom(view != null ? Messages.friendName(view) : Messages.name(from), from.name(), text));
+            }
             case Event.ProxyDown(String down) -> {
                 Instant now = clock.instant();
                 presence.forEach((id, p) -> {
@@ -265,7 +281,7 @@ public final class Friends implements Network.Listener {
             // Left (or was replaced by a newer session) while loading: don't resurrect a stale profile.
             if (platform.player(p.id()).filter(o -> o.audience() == p.audience()).isEmpty()) return completedFuture(null);
             profiles.put(p.id(), new Profile(p.audience(), data));
-            emit(new Event.Joined(p.id(), new Presence(p.name(), p.prefix(), proxy, p.server(), data.status())));
+            emit(new Event.Joined(p.id(), new Presence(p.name(), p.prefix(), proxy, p.server(), data.status(), activities.match(p.server()))));
             return completedFuture(null);
         }
     }
@@ -276,11 +292,18 @@ public final class Friends implements Network.Listener {
         if (pending > 0) p.audience().sendMessage(Messages.pending(pending));
     }
 
-    /** Call after a server switch so friends see the new server. */
+    /**
+     * Call after a server switch: friends network-wide see the new server and the activity {@code presence.rules}
+     * derive from it (an {@link Event.Updated}, i.e. the Redis presence entry plus one publish). Nothing is published
+     * if neither changed.
+     */
     public void moved(Online p) {
+        PlayerActivity activity = activities.match(p.server()); // outside the lock: regexes
         synchronized (lock) {
             Presence old = presence.get(p.id());
-            if (profiles.containsKey(p.id()) && old != null) emit(new Event.Updated(p.id(), old.withServer(p.server())));
+            if (!profiles.containsKey(p.id()) || old == null) return;
+            Presence now = old.withServer(p.server(), activity);
+            if (!now.equals(old)) emit(new Event.Updated(p.id(), now));
         }
     }
 
@@ -330,8 +353,9 @@ public final class Friends implements Network.Listener {
         }
     }
 
-    public CompletableFuture<Result> help(Online s) {
-        return reply(s, Messages.help(), Result.SUCCESS);
+    /** {@code privateMessages}: also list {@code /msg} and {@code /r}. */
+    public CompletableFuture<Result> help(Online s, boolean privateMessages) {
+        return reply(s, Messages.help(privateMessages), Result.SUCCESS);
     }
 
     public CompletableFuture<Result> add(Online s, Target target) {
@@ -489,6 +513,51 @@ public final class Friends implements Network.Listener {
         }
     }
 
+    /**
+     * {@code /msg}: a private message to a friend who is visibly online anywhere on the network. Plugins may cancel
+     * or rewrite it first ({@link Hooks#messaging}); a cancelled message is left entirely to them.
+     */
+    public CompletableFuture<Result> message(Online s, Target target, String text) {
+        return message(s, target, text, "/msg <friend> <message>");
+    }
+
+    private CompletableFuture<Result> message(Online s, Target target, String text, String usage) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        String body = text == null ? "" : UNPRINTABLE.matcher(text).replaceAll("").strip();
+        if (body.isEmpty()) return reply(s, Messages.usage(usage), Result.INVALID_ARGUMENT);
+        Friend f = find(me, target);
+        if (f == null) return reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS);
+        Presence p = visible(f.id());
+        if (p == null) return reply(s, Messages.offline(Messages.friendName(f), f.lastSeen(), clock.instant()), Result.NOT_ONLINE);
+        String sent = hooks.messaging(row(s), new PlayerRow(f.id(), p.name(), p.prefix(), f.lastSeen()), body);
+        if (sent == null) return completedFuture(Result.CANCELLED);
+        // Plugins were asked without the lock: check again that there is still someone to deliver to.
+        if (!me.friends.containsKey(f.id())) return reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS);
+        if (visible(f.id()) == null) return reply(s, Messages.offline(Messages.friendName(f), f.lastSeen(), clock.instant()), Result.NOT_ONLINE);
+        me.replyTo = new Target(f.id(), f.name());
+        s.audience().sendMessage(Messages.messageTo(Messages.friendName(f), f.name(), sent));
+        Event event = new Event.PrivateMessage(row(s), f.id(), sent);
+        apply(event); // delivers it if the friend is on this proxy
+        // Straight to the network, not through the SQL queue like emit(): no write to wait for, and chat must not lag.
+        if (network != Network.LOCAL) network.publish(event);
+        return completedFuture(Result.SUCCESS);
+    }
+
+    /** {@code /r}: {@link #message} to whoever this player last messaged or heard from. */
+    public CompletableFuture<Result> replyMessage(Online s, String text) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        Target to = me.replyTo;
+        return to == null ? reply(s, Messages.nobodyToReply(), Result.INVALID_ARGUMENT) : message(s, to, text, "/r <message>");
+    }
+
+    /** Online anywhere and not appearing offline, else null. */
+    private Presence visible(UUID id) {
+        Presence p = presence.get(id);
+        return p == null || p.status() == Status.OFFLINE ? null : p;
+    }
+
     public CompletableFuture<Result> list(Online s, int page, boolean bestOnly) {
         Profile me = profiles.get(s.id());
         if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
@@ -513,10 +582,8 @@ public final class Friends implements Network.Listener {
                     : a.friend().name().compareToIgnoreCase(b.friend().name()));
 
     private Messages.Entry entry(Friend f) {
-        Presence p = presence.get(f.id());
-        return p == null || p.status() == Status.OFFLINE
-                ? new Messages.Entry(f, null, null)
-                : new Messages.Entry(f, p.status(), p.server());
+        Presence p = visible(f.id());
+        return p == null ? new Messages.Entry(f, null, null, null) : new Messages.Entry(f, p.status(), p.server(), p.activity());
     }
 
     public CompletableFuture<Result> requests(Online s) {
@@ -531,6 +598,12 @@ public final class Friends implements Network.Listener {
     public List<String> friendNames(UUID id) {
         Profile p = profiles.get(id);
         return p == null ? List.of() : p.friends.values().stream().map(Friend::name).toList();
+    }
+
+    /** Friends a private message would reach right now (tab completion of {@code /msg}). */
+    public List<String> onlineFriendNames(UUID id) {
+        Profile p = profiles.get(id);
+        return p == null ? List.of() : p.friends.values().stream().filter(f -> visible(f.id()) != null).map(Friend::name).toList();
     }
 
     public List<String> requesterNames(UUID id) {

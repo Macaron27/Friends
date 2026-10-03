@@ -3,6 +3,7 @@ package com.friends.bungee;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.sql.SQLException;
 import java.util.List;
@@ -14,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.friends.core.ChatSessions;
+import com.friends.core.ConfigUpgrade;
 import com.friends.core.FriendCommand;
 import com.friends.core.FriendsRuntime;
 import com.friends.core.LuckPermsPrefix;
@@ -49,8 +51,9 @@ public final class FriendsBungee extends Plugin implements Listener {
     @Override
     public void onEnable() {
         Storage storage = null;
+        Settings settings;
         try {
-            Settings settings = Settings.read(source(loadConfig()));
+            settings = Settings.read(source(loadConfig()));
             storage = settings.openStorage(getDataFolder().toPath());
             Network network = RedisNetwork.open(settings, log);
             Function<UUID, String> prefixes = getProxy().getPluginManager().getPlugin("LuckPerms") != null ? LuckPermsPrefix::of : _ -> null;
@@ -72,6 +75,15 @@ public final class FriendsBungee extends Plugin implements Listener {
         plugins.registerCommand(this, new Cmd("friend", null, "f", "friends"));
         plugins.registerCommand(this, new Cmd("fl", "list"));
         plugins.registerCommand(this, new Cmd("status", "status"));
+        if (settings.privateMessages()) {
+            for (var command : plugins.getCommands()) {
+                if (List.of("msg", "tell", "w", "whisper", "r", "reply").contains(command.getKey())) {
+                    log.warn("Friends: /{} is already registered by another plugin; Friends replaces it (private-messages.enabled: false keeps theirs)", command.getKey());
+                }
+            }
+            plugins.registerCommand(this, new Cmd("msg", "msg", "tell", "w", "whisper"));
+            plugins.registerCommand(this, new Cmd("r", "reply", "reply"));
+        }
         plugins.registerListener(this, this);
         for (ProxiedPlayer p : getProxy().getPlayers()) connect(p, () -> {}); // enabled while players are online
     }
@@ -114,24 +126,30 @@ public final class FriendsBungee extends Plugin implements Listener {
 
     private Configuration loadConfig() throws IOException {
         File file = new File(getDataFolder(), "config.yml");
+        String bundled;
+        try (InputStream in = getResourceAsStream("config.yml")) {
+            bundled = new String(Objects.requireNonNull(in, "config.yml missing from the plugin jar").readAllBytes(), StandardCharsets.UTF_8);
+        }
         if (!file.exists()) {
             Files.createDirectories(getDataFolder().toPath());
-            try (InputStream in = getResourceAsStream("config.yml")) {
-                Files.copy(Objects.requireNonNull(in, "config.yml missing from the plugin jar"), file.toPath());
-            }
+            Files.writeString(file.toPath(), bundled);
+        } else {
+            List<String> added = ConfigUpgrade.addMissingSections(file.toPath(), bundled);
+            if (!added.isEmpty()) log.info("Friends: added the new settings {} to config.yml", added);
         }
         return ConfigurationProvider.getProvider(YamlConfiguration.class).load(file);
     }
 
-    private static Settings.Source source(Configuration config) {
+    static Settings.Source source(Configuration config) {
         return new Settings.Source() {
             @Override public String string(String path, String def) { return config.getString(path, def); }
             @Override public int number(String path, int def) { return config.getInt(path, def); }
             @Override public boolean flag(String path, boolean def) { return config.getBoolean(path, def); }
+            @Override public List<?> list(String path) { return config.getList(path, List.of()); }
         };
     }
 
-    /** /friend, /fl ("list") and /status ("status"). Commands run off BungeeCord's network threads. */
+    /** /friend, /fl ("list"), /status ("status"), /msg ("msg") and /r ("reply"). Commands run off BungeeCord's network threads. */
     private final class Cmd extends Command implements TabExecutor {
         private final String sub;
 

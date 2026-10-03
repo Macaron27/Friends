@@ -1,7 +1,7 @@
 # Friends API
 
 Lets other plugins read friend lists, presence and requests, act on behalf of players and react to friend events.
-The same `FriendsAPI` exists on Paper, Velocity and BungeeCord. Each platform also has six events
+The same `FriendsAPI` exists on Paper, Velocity and BungeeCord. Each platform also has seven events
 (`com.friends.api.bukkit`, `.velocity`, `.bungee`). The API is Java 8 bytecode with no dependencies of its own, so
 any plugin can compile against it. Every public type and method has Javadoc (`./gradlew :api:javadoc`).
 
@@ -23,7 +23,7 @@ Or install it in your local Maven repository from this repository:
 
 ```kotlin
 repositories { mavenLocal() }
-dependencies { compileOnly("com.friends:friends-api:0.5.0") }
+dependencies { compileOnly("com.friends:friends-api:0.6.0") }
 ```
 
 Then make your plugin load after Friends:
@@ -52,11 +52,22 @@ List<Friend> list = friends.getFriends(player);        // empty unless loaded
 boolean pals = friends.areFriends(alice, bob);        // at least one of them must be loaded
 Optional<Status> status = friends.getStatus(player);  // online anywhere: ONLINE, AWAY, BUSY, OFFLINE (appears offline)
 Optional<String> server = friends.getServer(player);  // backend server name, proxies only (empty on Paper)
+Optional<PlayerActivity> doing = friends.getActivity(player); // from presence.rules, proxies only (see below)
 List<FriendRequest> in = friends.getIncomingRequests(player);
 List<FriendRequest> out = friends.getOutgoingRequests(player);
 ```
 
 `Friend` gives `getUniqueId()`, `getName()`, `getSince()`, `isBestFriend()`, `getNickname()` and `getLastSeen()`.
+`PlayerActivity` gives `getGame()`, `getMode()` (null if the rule has none) and `describe()` (`"Playing BedWars Solo"`):
+the first `presence.rules` pattern matching the player's backend server, synchronised across proxies like the server.
+
+For menus, scoreboards and other UIs, `LastSeen` words times like Friends' chat does:
+
+```java
+String online = friends.getActivity(id).map(PlayerActivity::describe).orElse("Online");
+String offline = LastSeen.format(friend.getLastSeen());           // "Last seen 17 minutes ago"
+String ago = LastSeen.ago(friend.getLastSeen(), Instant.now());   // "17 minutes ago", "3 days ago", "just now"
+```
 `FriendRequest` gives `getSender()`, `getSenderName()`, `getTarget()`, `getTargetName()` and `getExpiresAt()`.
 
 ## 4. Load and act (asynchronous)
@@ -88,9 +99,24 @@ gets no chat reply: the `Result` tells you what happened. The other player is st
 | `FriendRemoveEvent` | yes | before a friendship ends, once per friend (`/f removeall` too) |
 | `FriendRemovedEvent` | no | after, exactly once |
 | `FriendStatusChangeEvent` | yes | before `/status` changes |
+| `FriendMessageEvent` | yes | before a private message (`/msg`, `/r`) is delivered; `setMessage` rewrites it |
 
 Pair events have `getPlayerId()` / `getPlayerName()` (the acting player) and `getTargetId()` / `getTargetName()`. The
 status event has `getOldStatus()` / `getNewStatus()`. `FriendAddedEvent` also has `getSince()`.
+
+`FriendMessageEvent` (sender = player, recipient = target) has `getMessage()` / `setMessage()`. Cancel it to own the
+messaging layer: Friends then delivers nothing, echoes nothing and doesn't change either player's `/r` target, so your
+chat plugin can deliver (or block) it its own way, e.g. through your network's chat system:
+
+```java
+@Subscribe // Velocity; on BungeeCord/Paper: @EventHandler and e.setCancelled(true)
+public void onMessage(FriendMessageEvent e) {
+    e.setResult(ResultedEvent.GenericResult.denied());
+    myChat.whisper(e.getPlayerId(), e.getTargetId(), e.getMessage());
+}
+```
+
+The text is plain: Friends never parses colours or formatting in it.
 
 Paper (`com.friends.api.bukkit`, asynchronous Bukkit events):
 

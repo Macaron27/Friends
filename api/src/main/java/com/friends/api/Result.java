@@ -29,7 +29,9 @@ public enum Result {
     /** A plugin cancelled the action's event. */
     CANCELLED,
     /** A database error (Friends logs it). */
-    ERROR;
+    ERROR,
+    /** The target is offline, or appearing offline (private messages). Last, so earlier ordinals never move. */
+    NOT_ONLINE;
 
     /**
      * Whether the action happened.

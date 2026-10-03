@@ -7,6 +7,7 @@ import java.util.function.Function;
 import com.friends.api.Status;
 import com.friends.api.velocity.FriendAddEvent;
 import com.friends.api.velocity.FriendAddedEvent;
+import com.friends.api.velocity.FriendMessageEvent;
 import com.friends.api.velocity.FriendRemoveEvent;
 import com.friends.api.velocity.FriendRemovedEvent;
 import com.friends.api.velocity.FriendRequestSendEvent;
@@ -52,6 +53,12 @@ final class VelocityHooks implements Hooks {
     @Override
     public boolean statusChanging(PlayerRow player, Status from, Status to) {
         return allowed(new FriendStatusChangeEvent(player.id(), player.name(), from, to));
+    }
+
+    @Override
+    public String messaging(PlayerRow from, PlayerRow to, String message) {
+        FriendMessageEvent event = new FriendMessageEvent(from.id(), from.name(), to.id(), to.name(), message);
+        return allowed(event) ? event.getMessage() : null;
     }
 
     /** Waits for every listener, then reads their verdict. */

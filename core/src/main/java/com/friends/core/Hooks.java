@@ -33,6 +33,14 @@ public interface Hooks {
 
     default void unfriended(PlayerRow player, Friend friend) {}
 
+    /**
+     * {@code from} is about to send their friend {@code to} a private message. Returns the text to deliver (plugins
+     * may rewrite it), or null to cancel: then nothing is delivered, echoed or remembered for {@code /r}.
+     */
+    default String messaging(PlayerRow from, PlayerRow to, String message) {
+        return message;
+    }
+
     /** False keeps the current status. */
     default boolean statusChanging(PlayerRow player, Status from, Status to) {
         return true;

@@ -1,4 +1,4 @@
-# Friends (Velocity) configuration
+# Friends configuration (the same file on Velocity, BungeeCord and Paper)
 
 storage:
   # sqlite: a local file, fine for a single proxy. mysql: MySQL or MariaDB.
@@ -34,3 +34,25 @@ redis:
   proxy-id: ""
   # Prefix for keys and the pub/sub channel, so several networks can share one Redis.
   namespace: friends
+
+# Private messages between friends: /msg <friend> <message> (also /tell, /w, /whisper) and /r <message> (/reply).
+# false: Friends doesn't register those commands, e.g. when another plugin provides them. Plugins can also cancel
+# FriendMessageEvent to deliver messages themselves.
+private-messages:
+  enabled: true
+
+# What friends see a player doing, from the name of the backend server they are on (proxies only): "● Bob — Playing
+# BedWars Solo" in /f list, and FriendsAPI.getActivity. Each pattern is a regular expression that must match the whole
+# server name, ignoring case; the first matching rule wins; mode is optional. No match: friends see the server name.
+presence:
+  # Example (replace the [] below with your own rules):
+  # rules:
+  #   - pattern: "BW.1S.*"   # BW-1S-01, bw_1s_lobby...
+  #     game: "BedWars"
+  #     mode: "Solo"
+  #   - pattern: "BW.2S.*"
+  #     game: "BedWars"
+  #     mode: "Doubles"
+  #   - pattern: "SW.*"
+  #     game: "SkyWars"     # no mode: "Playing SkyWars"
+  rules: []

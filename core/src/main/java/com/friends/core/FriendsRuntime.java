@@ -39,9 +39,12 @@ public final class FriendsRuntime implements AutoCloseable {
         this.storage = storage;
         this.network = network;
         this.log = log;
+        settings.warnings().forEach(w -> log.warn("Friends config: {}", w));
+        log.info("Friends: {} presence rule(s); private messages {}", settings.activities().size(),
+                settings.privateMessages() ? "on /msg and /r" : "off");
         this.friends = new Friends(storage, platform, network, db, async, clock, settings.requestExpiry(),
-                settings.maxFriends(), inOrder(hooks), log);
-        this.command = new FriendCommand(friends);
+                settings.maxFriends(), settings.activities(), inOrder(hooks), log);
+        this.command = new FriendCommand(friends, settings.privateMessages());
         this.api = new FriendsApi(friends, platform, async);
         friends.start();
         timer.scheduleWithFixedDelay(() -> {
@@ -90,6 +93,7 @@ public final class FriendsRuntime implements AutoCloseable {
             @Override public boolean unfriending(PlayerRow player, Friend friend) { return hooks.unfriending(player, friend); }
             @Override public void unfriended(PlayerRow player, Friend friend) { done.execute(() -> hooks.unfriended(player, friend)); }
             @Override public boolean statusChanging(PlayerRow player, Status from, Status to) { return hooks.statusChanging(player, from, to); }
+            @Override public String messaging(PlayerRow from, PlayerRow to, String message) { return hooks.messaging(from, to, message); }
         };
     }
 }

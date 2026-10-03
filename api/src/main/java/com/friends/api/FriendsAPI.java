@@ -108,6 +108,16 @@ public interface FriendsAPI {
     Optional<String> getServer(UUID player);
 
     /**
+     * What a player online anywhere on the network is doing, from the first {@code presence.rules} pattern matching
+     * their backend server's name (proxies only). Synchronised across proxies, like {@link #getServer}.
+     *
+     * @param player a player's UUID
+     * @return e.g. BedWars / Solo; empty on Paper, while connecting, if no rule matches their server, if offline, or
+     *         if they appear offline
+     */
+    Optional<PlayerActivity> getActivity(UUID player);
+
+    /**
      * Pending requests the player received (network-wide).
      *
      * @param player a player's UUID

@@ -6,6 +6,7 @@ import static net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY;
 import static net.kyori.adventure.text.format.NamedTextColor.GOLD;
 import static net.kyori.adventure.text.format.NamedTextColor.GRAY;
 import static net.kyori.adventure.text.format.NamedTextColor.GREEN;
+import static net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE;
 import static net.kyori.adventure.text.format.NamedTextColor.RED;
 import static net.kyori.adventure.text.format.NamedTextColor.YELLOW;
 
@@ -13,8 +14,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Stream;
 
+import com.friends.api.LastSeen;
+import com.friends.api.PlayerActivity;
 import com.friends.api.Status;
 
 import net.kyori.adventure.text.Component;
@@ -36,7 +41,8 @@ final class Messages {
     private static final DateTimeFormatter DATE = DateTimeFormatter.ISO_LOCAL_DATE.withZone(ZoneOffset.UTC);
     static final Component LINE = text("-----------------------------------------------------", NamedTextColor.BLUE, TextDecoration.STRIKETHROUGH);
 
-    record Entry(Friend friend, Status status, String server) {} // status null = offline (or appearing offline)
+    // status null = offline (or appearing offline); server and activity null when unknown
+    record Entry(Friend friend, Status status, String server, PlayerActivity activity) {}
 
     // --- building blocks ---
 
@@ -76,21 +82,10 @@ final class Messages {
                 .hoverEvent(HoverEvent.showText(text(hover, GRAY)));
     }
 
-    static String ago(Instant then, Instant now) {
-        long s = Math.max(0, Duration.between(then, now).toSeconds());
-        if (s < 60) return "just now";
-        long[] sizes = {60, 60, 24, 30, 12};
-        String[] units = {"minute", "hour", "day", "month", "year"};
-        long n = s;
-        int unit = -1;
-        while (unit + 1 < units.length && n >= sizes[unit + 1]) n /= sizes[++unit];
-        return n + " " + units[unit] + (n == 1 ? "" : "s") + " ago";
-    }
-
     // --- command replies ---
 
     // Fixed messages are built once (MiniMessage parsing costs microseconds per call).
-    private static final Component HELP = box(
+    private static final Component[] HELP_LINES = {
             mm("<green>Friend Commands:"),
             mm("<yellow>/f add \\<player> <gray>- <aqua>Send a friend request"),
             mm("<yellow>/f accept \\<player> <gray>- <aqua>Accept a friend request"),
@@ -102,10 +97,15 @@ final class Messages {
             mm("<yellow>/f nickname \\<player> [nickname] <gray>- <aqua>Set a nickname only you can see"),
             mm("<yellow>/f removeall <gray>- <aqua>Remove all friends except best friends"),
             mm("<yellow>/f notifications <gray>- <aqua>Toggle friend join/leave messages"),
-            mm("<yellow>/status [online|away|busy|offline] <gray>- <aqua>Set your online status"));
+            mm("<yellow>/status [online|away|busy|offline] <gray>- <aqua>Set your online status")};
+    private static final Component HELP = box(HELP_LINES);
+    private static final Component HELP_WITH_MESSAGES = box(Stream.concat(Arrays.stream(HELP_LINES), Stream.of(
+            mm("<yellow>/msg \\<friend> \\<message> <gray>- <aqua>Send a friend a private message"),
+            mm("<yellow>/r \\<message> <gray>- <aqua>Reply to your last private message"))).toArray(Component[]::new));
 
-    static Component help() {
-        return HELP;
+    /** {@code privateMessages}: with {@code /msg} and {@code /r}. */
+    static Component help(boolean privateMessages) {
+        return privateMessages ? HELP_WITH_MESSAGES : HELP;
     }
 
     static Component usage(String usage) {
@@ -269,6 +269,40 @@ final class Messages {
                 buttons.build());
     }
 
+    // --- private messages ---
+
+    // Hypixel's look: "From [VIP] Bob: hi" / "To [VIP] Bob: hi", the text in gray. Clicking a line starts a reply.
+    private static final Component FROM = text("From ", LIGHT_PURPLE);
+    private static final Component TO = text("To ", LIGHT_PURPLE);
+    private static final Component COLON = text(": ", GRAY);
+
+    /** {@code text} is the sender's: plain text, never parsed. {@code name} is how the receiver sees them. */
+    static Component messageFrom(Component name, String username, String text) {
+        return privateLine(FROM, name, username, text);
+    }
+
+    static Component messageTo(Component name, String username, String text) {
+        return privateLine(TO, name, username, text);
+    }
+
+    private static Component privateLine(Component direction, Component name, String username, String text) {
+        return text().append(direction).append(name).append(COLON).append(text(text, GRAY))
+                .clickEvent(ClickEvent.suggestCommand("/msg " + username + " "))
+                .hoverEvent(HoverEvent.showText(text("Click to reply", GRAY)))
+                .build();
+    }
+
+    static Component offline(Component friend, Instant lastSeen, Instant now) {
+        return box(mm("<player> <red>is offline. <gray>(<seen>)", player(friend),
+                Placeholder.unparsed("seen", LastSeen.format(lastSeen, now))));
+    }
+
+    private static final Component NOBODY_TO_REPLY = box(mm("<red>You have nobody to reply to! Use <yellow>/msg \\<friend> \\<message>"));
+
+    static Component nobodyToReply() {
+        return NOBODY_TO_REPLY;
+    }
+
     // --- notifications ---
 
     // Sent to every online friend on each join/leave: plain builders, no parsing (same styling as
@@ -318,20 +352,31 @@ final class Messages {
         return box(lines);
     }
 
+    // ponytail: "●" (U+25CF) in the status colour, not the emoji 🟢: it is in the Basic Multilingual Plane, which 1.8
+    // clients' fonts cover; supplementary-plane emoji may render as boxes there.
+    private static final Component DOT_OFFLINE = text("● ", DARK_GRAY);
+    private static final Component DASH = text(" — ", DARK_GRAY);
+
+    /** "● Bob — Playing BedWars Solo", "● Bob — Away · In lobby-1", "● Bob — Last seen 17 minutes ago". */
     private static Component entry(Entry e, Instant now) {
         Friend f = e.friend();
         Component name = friendName(f);
         if (f.best()) name = name.decorate(TextDecoration.BOLD);
-        Component state = e.status() == null ? text(" is currently offline", RED) : switch (e.status()) {
-            case AWAY -> text(" is away", YELLOW);
-            case BUSY -> text(" is busy", RED);
-            default -> text(e.server() == null ? " is online" : " is in " + e.server(), YELLOW);
-        };
         var hover = text();
         if (f.nickname() != null) hover.append(text("Username: ", GRAY)).append(name(f.prefix(), f.name())).append(newline());
         hover.append(text("Friends since " + DATE.format(f.since()), GRAY));
-        if (e.status() == null) hover.append(newline()).append(text("Last seen " + ago(f.lastSeen(), now), GRAY));
-        return text().append(name).append(state).hoverEvent(HoverEvent.showText(hover.build())).build();
+        if (e.status() == null) {
+            return text().append(DOT_OFFLINE).append(name).append(DASH).append(text(LastSeen.format(f.lastSeen(), now), GRAY))
+                    .hoverEvent(HoverEvent.showText(hover.build())).build();
+        }
+        String where = e.activity() != null ? e.activity().describe() : e.server() != null ? "In " + e.server() : "Online";
+        String detail = switch (e.status()) {
+            case AWAY, BUSY -> label(e.status()) + " · " + where;
+            default -> where;
+        };
+        if (e.activity() != null && e.server() != null) hover.append(newline()).append(text("Server: " + e.server(), GRAY));
+        return text().append(text("● ", color(e.status()))).append(name).append(DASH).append(text(detail, e.status() == Status.BUSY ? RED : YELLOW))
+                .hoverEvent(HoverEvent.showText(hover.build())).build();
     }
 
     private static final Component NO_REQUESTS = box(mm("<yellow>You don't have any pending friend requests."));

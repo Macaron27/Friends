@@ -9,6 +9,7 @@ import org.bukkit.plugin.PluginManager;
 import com.friends.api.Status;
 import com.friends.api.bukkit.FriendAddEvent;
 import com.friends.api.bukkit.FriendAddedEvent;
+import com.friends.api.bukkit.FriendMessageEvent;
 import com.friends.api.bukkit.FriendRemoveEvent;
 import com.friends.api.bukkit.FriendRemovedEvent;
 import com.friends.api.bukkit.FriendRequestSendEvent;
@@ -53,6 +54,12 @@ final class BukkitHooks implements Hooks {
     @Override
     public boolean statusChanging(PlayerRow player, Status from, Status to) {
         return allowed(new FriendStatusChangeEvent(player.id(), player.name(), from, to));
+    }
+
+    @Override
+    public String messaging(PlayerRow from, PlayerRow to, String message) {
+        FriendMessageEvent event = new FriendMessageEvent(from.id(), from.name(), to.id(), to.name(), message);
+        return allowed(event) ? event.getMessage() : null;
     }
 
     private <E extends Event & Cancellable> boolean allowed(E event) {

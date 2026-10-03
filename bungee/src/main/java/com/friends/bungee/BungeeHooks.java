@@ -6,6 +6,7 @@ import java.util.function.Consumer;
 import com.friends.api.Status;
 import com.friends.api.bungee.FriendAddEvent;
 import com.friends.api.bungee.FriendAddedEvent;
+import com.friends.api.bungee.FriendMessageEvent;
 import com.friends.api.bungee.FriendRemoveEvent;
 import com.friends.api.bungee.FriendRemovedEvent;
 import com.friends.api.bungee.FriendRequestSendEvent;
@@ -53,6 +54,12 @@ final class BungeeHooks implements Hooks {
     @Override
     public boolean statusChanging(PlayerRow player, Status from, Status to) {
         return allowed(new FriendStatusChangeEvent(player.id(), player.name(), from, to));
+    }
+
+    @Override
+    public String messaging(PlayerRow from, PlayerRow to, String message) {
+        FriendMessageEvent event = new FriendMessageEvent(from.id(), from.name(), to.id(), to.name(), message);
+        return allowed(event) ? event.getMessage() : null;
     }
 
     private <E extends Event & Cancellable> boolean allowed(E event) {
