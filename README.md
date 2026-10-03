@@ -51,13 +51,55 @@ SQLite driver: Paper 1.12.2's has no Apple Silicon build (Linux x86_64/ARM are f
 | `/f notifications` | Toggle "Friend > X joined./left." messages. |
 | `/status [online\|away\|busy\|offline]` | Status shown to friends; `offline` = appear offline (no join/leave messages). |
 
+Private messages (friends only, network-wide; turn off with `private-messages.enabled: false`):
+
+| Command | What it does |
+|---|---|
+| `/msg <friend> <message>` (also `/tell`, `/w`, `/whisper`) | Message a friend who is online and not appearing offline. Offline: "Bob is offline. (Last seen 3 days ago)". |
+| `/r <message>` (also `/reply`) | Answer whoever you last messaged or heard from. Clicking a message line also starts a reply. |
+
+`/f list` shows each friend's presence:
+
+```
+● Player1 — Playing BedWars Solo      (green: online; yellow: away; red: busy, with "Away · " / "Busy · ")
+● Player2 — In lobby-1                (no presence rule matches the server)
+● Player3 — Last seen 17 minutes ago  (offline, or appearing offline)
+```
+
 Permission `friends.use`: on by default on Paper; on Velocity allowed unless explicitly false; BungeeCord has no
 permission check (no permission defaults there).
 
 ## Config (`plugins/Friends/config.yml`, `plugins/friends/` on Velocity)
 
 The same file on every platform: `storage.type` `sqlite` or `mysql` (MySQL/MariaDB), `request-expiry-minutes`
-(default 5), `max-friends` (default 5000), and the `redis` section (proxies only; ignored on Paper).
+(default 5), `max-friends` (default 5000), the `redis` section (proxies only; ignored on Paper),
+`private-messages.enabled` (default true) and `presence.rules` (proxies only):
+
+```yaml
+presence:
+  rules:              # first match wins; each pattern is a regex matching the whole server name, ignoring case
+    - pattern: "BW.1S.*"
+      game: "BedWars"
+      mode: "Solo"
+    - pattern: "BW.2S.*"
+      game: "BedWars"
+      mode: "Doubles"
+    - pattern: "SW.*"
+      game: "SkyWars"   # mode is optional: "Playing SkyWars"
+```
+
+A rule with an invalid regex or without a game is skipped with a warning at startup; Friends keeps running.
+
+## Upgrading
+
+Replace the jar and restart: no database migration. Sections a new version adds (in 0.6.0: `private-messages` and
+`presence`) are appended to your `config.yml` with their comments at startup; nothing you wrote is changed.
+
+- **0.6.0 adds `/msg`, `/tell`, `/w`, `/whisper`, `/r` and `/reply`** (friends only). If another plugin provides them,
+  set `private-messages.enabled: false`. On Paper, a plugin that declares `/msg` in its plugin.yml (e.g. Essentials)
+  keeps it and Friends' becomes `/friends:msg` (logged); on the proxies Friends replaces an existing `/msg` (logged).
+- **Multi-proxy:** upgrade every proxy together. Older proxies ignore activities (they keep working), but a private
+  message to a player on a proxy that isn't upgraded yet is lost (that proxy logs "ignoring unknown event type").
 
 ## Multiple proxies
 
@@ -76,7 +118,8 @@ Use the plugin either on the proxies or on standalone Paper servers, not both.
 ## API for other plugins
 
 `FriendsAPI` is the same on Paper, Velocity and BungeeCord: friend lists, status, current server and pending
-requests, actions (request, accept, deny, remove, best friend, nickname, status) and six events per platform. See
+requests, activity, actions (request, accept, deny, remove, best friend, nickname, status) and seven events per
+platform (including a cancellable `FriendMessageEvent` to plug in your own chat system). See
 [`api/README.md`](api/README.md) for setup, examples and the threading rules.
 
 ## How it works
@@ -94,6 +137,9 @@ requests, actions (request, accept, deny, remove, best friend, nickname, status)
   bootstrap, where other plugins' class loaders can see it. It skips SQLite (every Paper bundles its
   own; the SQL stays portable to SQLite 3.7.2, Paper 1.8.8's) and Redis, so it is 3.4 MB, and tells Paper 1.20.5+
   not to remap it.
+- Presence (online, server, status, activity) lives in memory and, with several proxies, in the Redis `<ns>:online`
+  hash: a server switch evaluates `presence.rules` once and publishes one update only if something changed. Private
+  messages are one pub/sub event, published straight away (not behind the SQL queue) and never stored.
 - Tables are `friends_players` and `friends_friendships`. Data from the old Bungee/Paper tables
   (`players`, `friends`, `requests`, `settings`) is not migrated.
 

@@ -8,7 +8,8 @@ folia-<version> (the same flow, same Paper jar, on Folia; e.g. 1.21.11),
 load-<version> (plugin enables and answers the console), bungee[-<version>] / velocity[-<version>] (the proxy
 plugin with players and a Paper backend of that version, default 1.8.8), mixed (BungeeCord + Velocity sharing MySQL and Redis; needs
 FRIENDS_MYSQL=host:port/db:user:password and FRIENDS_REDIS=host:port), api-<version> / api-bungee / api-velocity (another
-plugin, tools/e2e/probe, using the API and its events). Servers run in <jars-dir>/e2e-*.
+plugin, tools/e2e/probe, using the API and its events), upgrade-paper / upgrade-velocity (the previous release's
+friends-<platform>.jar from FRIENDS_OLD_JARS=<dir>, then this build on the same data). Servers run in <jars-dir>/e2e-*.
 """
 import os
 import platform
@@ -35,8 +36,12 @@ def cmd(bot, line, expect, timeout=10):
     return bot.wait_for(expect, mark, timeout)
 
 
+# On the proxies, the backend "lobby" counts as a BedWars Solo server: /f list shows the activity, synced across proxies.
+PRESENCE = {"presence.rules": [{"pattern": "LOB.*", "game": "BedWars", "mode": "Solo"}]}
+
+
 def friend_flow(alice, bob, where):
-    """The same player story on every platform. `where`: how Alice sees Bob online ("is online" / "is in lobby")."""
+    """The same player story on every platform. `where`: how Alice sees Bob online ("— Online" / "— Playing ...")."""
     cmd(alice, "/f", "Friend Commands:")
     cmd(alice, "/f add Bob", "You sent a friend request to Bob! They have 5 minutes to accept it!")
     _, raw = bob.wait_for("Friend request from Alice")
@@ -44,14 +49,23 @@ def friend_flow(alice, bob, where):
     mark = alice.mark()
     cmd(bob, "/f accept Alice", "You are now friends with Alice")
     alice.wait_for("You are now friends with Bob", mark)
-    cmd(alice, "/fl", f"Bob {where}")
+    cmd(alice, "/fl", f"● Bob {where}")
     cmd(bob, "/status busy", "Your status is now Busy.")
-    cmd(alice, "/f list", "Bob is busy")
+    cmd(alice, "/f list", "● Bob — Busy · ")
     cmd(bob, "/status online", "Your status is now Online.")
+    mark = bob.mark()
+    cmd(alice, "/msg Bob hi there <red>&c", "To Bob: hi there <red>&c")
+    _, raw = bob.wait_for("From Alice: hi there <red>&c", mark)
+    assert "/msg Alice " in raw, f"no click-to-reply: {raw}"
+    mark = alice.mark()
+    cmd(bob, "/r hello back", "To Alice: hello back")
+    alice.wait_for("From Bob: hello back", mark)
     cmd(alice, "/f nickname Bob Bobby", "You'll now see Bob as Bobby.")
     mark = alice.mark()
     bob.close()
     alice.wait_for("Friend > Bobby left.", mark)
+    cmd(alice, "/tell Bob still there?", "Bobby is offline. (Last seen just now)")  # /tell: ours, not vanilla's
+    cmd(alice, "/fl", "● Bobby — Last seen just now")
     mark = alice.mark()
     bob.connect()
     alice.wait_for("Friend > Bobby joined.", mark)
@@ -93,7 +107,7 @@ def scenario_paper(jars, version, kind="paper"):
         s.start()
         s.wait_log(r"Enabling Friends")
         alice, bob = players(port, PROTOCOL[version])
-        friend_flow(alice, bob, "is online")
+        friend_flow(alice, bob, "— Online")
         for b in (alice, bob):
             b.close()
         check_clean(s)
@@ -130,11 +144,12 @@ def scenario_proxy(jars, kind, version="1.8.8"):
     make = servers.bungee if kind == "bungee" else servers.velocity
     jar = os.path.join(jars, "BungeeCord.jar" if kind == "bungee" else "velocity.jar")
     proxy = make(os.path.join(jars, f"e2e-{kind}-{version}"), jar, proxy_port, back_port, PLUGIN[kind])
+    servers.plugin_config(proxy.folder, **PRESENCE)
     try:
         back.start()
         proxy.start()
         alice, bob = players(proxy_port, PROTOCOL[version])
-        friend_flow(alice, bob, "is in lobby")
+        friend_flow(alice, bob, "— Playing BedWars Solo")
         for b in (alice, bob):
             b.close()
         check_clean(proxy)
@@ -154,11 +169,11 @@ def api_flow(srv, alice, bob):
                  r"probe: areFriends=true friends of Bob=\[Alice\]", r"probe: FriendStatusChangeEvent Bob ONLINE->BUSY",
                  r"probe: setStatus Bob BUSY -> SUCCESS"):
         srv.wait_log(line, mark)
-    cmd(alice, "/fl", "Bob is busy")  # the probe's API call, as players see it
+    cmd(alice, "/fl", "Bob — Busy")  # the probe's API call, as players see it
     bob.say("/status away")           # the probe cancels this one: no reply, nothing changes
     srv.wait_log(r"probe: FriendStatusChangeEvent Bob BUSY->AWAY cancelled", mark)
     time.sleep(PAUSE)
-    cmd(alice, "/fl", "Bob is busy")
+    cmd(alice, "/fl", "Bob — Busy")
     cmd(alice, "/f remove Bob", "You removed Bob from your friends list!")
     srv.wait_log(r"probe: FriendRemoveEvent Alice->Bob", mark)
     srv.wait_log(r"probe: FriendRemovedEvent Alice->Bob", mark)
@@ -197,7 +212,7 @@ def scenario_api(jars, where):
 
 def scenario_mixed(jars):
     rhost, rport = os.environ["FRIENDS_REDIS"].split(":")
-    shared = {**mysql_settings(), "redis.enabled": True, "redis.host": rhost, "redis.port": int(rport),
+    shared = {**mysql_settings(), **PRESENCE, "redis.enabled": True, "redis.host": rhost, "redis.port": int(rport),
               "redis.namespace": f"friends-e2e-{int(time.time())}"}
     back = backend(jars, 25790)
     bungee = servers.bungee(os.path.join(jars, "e2e-mixed-bungee"), os.path.join(jars, "BungeeCord.jar"), 25791, 25790, PLUGIN["bungee"])
@@ -212,7 +227,7 @@ def scenario_mixed(jars):
         time.sleep(0.5)
         bob = Bot("Bob", 25792).connect()      # through Velocity
         time.sleep(2)
-        friend_flow(alice, bob, "is in lobby")
+        friend_flow(alice, bob, "— Playing BedWars Solo")  # Bob's activity (Velocity) seen by Alice (BungeeCord)
         for b in (alice, bob):
             b.close()
         check_clean(bungee, velocity)
@@ -220,6 +235,53 @@ def scenario_mixed(jars):
         velocity.stop("end")
         bungee.stop("end")
         back.stop()
+
+
+def scenario_upgrade(jars, kind):
+    """The previous release (FRIENDS_OLD_JARS/friends-<kind>.jar), then this build on the same database and config."""
+    old = os.path.join(os.environ["FRIENDS_OLD_JARS"], f"friends-{kind}.jar")
+    if kind == "paper":
+        back, port, protocol, stop, data = None, 25820, PROTOCOL["26.3"], "stop", "Friends"
+        srv = servers.paper(os.path.join(jars, "e2e-upgrade-paper"), os.path.join(jars, "paper-26.3.jar"), port, old)
+    else:
+        back, port, protocol, stop, data = backend(jars, 25822), 25823, 47, "end", "friends"
+        srv = servers.velocity(os.path.join(jars, "e2e-upgrade-velocity"), os.path.join(jars, "velocity.jar"), port, 25822, old)
+    config = os.path.join(srv.folder, "plugins", data, "config.yml")
+    try:
+        if back:
+            back.start()
+        srv.start()
+        alice, bob = players(port, protocol)
+        cmd(alice, "/f add Bob", "You sent a friend request to Bob!")
+        cmd(bob, "/f accept Alice", "You are now friends with Alice")
+        cmd(alice, "/f nickname Bob Bobby", "You'll now see Bob as Bobby.")
+        for b in (alice, bob):
+            b.close()
+        srv.stop(stop)
+        with open(config) as f:
+            before = f.read()
+        assert "presence:" not in before, "not an older config"
+
+        os.remove(os.path.join(srv.folder, "plugins", os.path.basename(old)))
+        shutil.copy(PLUGIN[kind], os.path.join(srv.folder, "plugins"))
+        srv.lines = []
+        srv.start()
+        srv.wait_log(r"added the new settings \[private-messages, presence\] to config.yml")
+        with open(config) as f:
+            after = f.read()
+        assert after.startswith(before) and "\npresence:\n" in after, "the old config.yml is kept, new sections appended"
+        alice, bob = players(port, protocol)
+        cmd(alice, "/fl", "● Bobby — ")  # the friendship and nickname survived, shown the new way
+        mark = bob.mark()
+        cmd(alice, "/w Bob upgraded", "To Bobby: upgraded")  # /w: ours, not vanilla's
+        bob.wait_for("From Alice: upgraded", mark)
+        for b in (alice, bob):
+            b.close()
+        check_clean(srv)
+    finally:
+        srv.stop(stop)
+        if back:
+            back.stop()
 
 
 def main():
@@ -242,6 +304,8 @@ def main():
                 scenario_proxy(jars, kind, version or "1.8.8")
             elif name == "mixed":
                 scenario_mixed(jars)
+            elif name.startswith("upgrade-"):
+                scenario_upgrade(jars, name[8:])
             else:
                 raise ValueError(f"unknown scenario {name}")
             print(f"PASS {name} ({time.time() - start:.0f}s)", flush=True)

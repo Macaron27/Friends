@@ -13,19 +13,25 @@ import com.friends.api.Status;
 import com.friends.core.Friends.Target;
 import com.friends.core.Platform.Online;
 
-/** Parses {@code /friend <sub> ...} arguments. {@code /fl} and {@code /status} arrive as "list"/"status". */
+/**
+ * Parses {@code /friend <sub> ...} arguments. {@code /fl}, {@code /status}, {@code /msg} and {@code /r} arrive as
+ * "list", "status", "msg" and "reply".
+ */
 public final class FriendCommand {
     private static final List<String> SUBCOMMANDS = List.of("add", "accept", "deny", "list", "requests", "remove",
             "best", "nickname", "removeall", "notifications", "status", "help");
     private static final int MAX_SUGGESTIONS = 100;
 
     private final Friends friends;
+    private final boolean privateMessages;
 
-    public FriendCommand(Friends friends) {
+    /** {@code privateMessages}: {@code private-messages.enabled} (else "msg" and "reply" are not commands). */
+    public FriendCommand(Friends friends, boolean privateMessages) {
         this.friends = friends;
+        this.privateMessages = privateMessages;
     }
 
-    /** {@code /fl} and {@code /status} are {@code /friend list} and {@code /friend status}: prepend {@code sub} (if any). */
+    /** {@code /fl}, {@code /status}, {@code /msg} and {@code /r} are {@code /friend <sub>}: prepend {@code sub} (if any). */
     public static String[] withSub(String sub, String[] args) {
         if (sub == null) return args;
         String[] out = new String[args.length + 1];
@@ -42,8 +48,11 @@ public final class FriendCommand {
     public CompletableFuture<Result> execute(Online s, String[] args) {
         String sub = args.length == 0 ? "help" : args[0].toLowerCase(Locale.ROOT);
         Target arg = args.length > 1 ? Target.named(args[1]) : null;
+        if (!privateMessages && (sub.equals("msg") || sub.equals("reply"))) sub = "help";
         CompletableFuture<Result> result = switch (sub) {
-            case "help" -> friends.help(s);
+            case "help" -> friends.help(s, privateMessages);
+            case "msg" -> args.length < 3 ? usage(s, "/msg <friend> <message>") : friends.message(s, arg, rest(args, 2));
+            case "reply" -> args.length < 2 ? usage(s, "/r <message>") : friends.replyMessage(s, rest(args, 1));
             case "add" -> arg == null ? usage(s, "/f add <player>") : friends.add(s, arg);
             case "accept" -> arg == null ? usage(s, "/f accept <player>") : friends.accept(s, arg);
             case "deny", "decline" -> arg == null ? usage(s, "/f deny <player>") : friends.deny(s, arg);
@@ -57,12 +66,16 @@ public final class FriendCommand {
             case "removeall" -> friends.removeAll(s, args.length > 1 && "confirm".equalsIgnoreCase(args[1]));
             case "notifications", "notification", "notif" -> friends.toggleNotifications(s);
             case "status" -> status(s, args.length > 1 ? args[1] : null);
-            default -> args.length == 1 ? friends.add(s, Target.named(args[0])) : friends.help(s); // "/f Steve" = "/f add Steve"
+            default -> args.length == 1 ? friends.add(s, Target.named(args[0])) : friends.help(s, privateMessages); // "/f Steve" = "/f add Steve"
         };
         return result.exceptionally(_ -> {
             s.audience().sendMessage(Messages.error());
             return Result.ERROR;
         });
+    }
+
+    private static String rest(String[] args, int from) {
+        return String.join(" ", Arrays.copyOfRange(args, from, args.length));
     }
 
     private CompletableFuture<Result> list(Online s, String[] args) {
@@ -111,6 +124,7 @@ public final class FriendCommand {
             }
             case "accept", "deny", "decline" -> filter(friends.requesterNames(s.id()).stream(), prefix);
             case "remove", "delete", "best", "nickname", "nick" -> filter(friends.friendNames(s.id()).stream(), prefix);
+            case "msg" -> privateMessages ? filter(friends.onlineFriendNames(s.id()).stream(), prefix) : List.of();
             case "list" -> filter(Stream.of("best"), prefix);
             case "removeall" -> filter(Stream.of("confirm"), prefix);
             case "status" -> filter(Stream.of("online", "away", "busy", "offline"), prefix);

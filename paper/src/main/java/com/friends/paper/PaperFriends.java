@@ -1,5 +1,8 @@
 package com.friends.paper;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
@@ -9,6 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.function.Function;
 
 import org.bukkit.command.Command;
+import org.bukkit.command.CommandMap;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -24,6 +28,7 @@ import org.slf4j.LoggerFactory;
 
 import com.friends.api.FriendsAPI;
 import com.friends.core.ChatSessions;
+import com.friends.core.ConfigUpgrade;
 import com.friends.core.FriendCommand;
 import com.friends.core.FriendsRuntime;
 import com.friends.core.LuckPermsPrefix;
@@ -53,9 +58,11 @@ public final class PaperFriends implements Listener {
 
     public void enable() {
         plugin.saveDefaultConfig();
+        upgradeConfig();
         Storage storage = null;
+        Settings settings;
         try {
-            Settings settings = Settings.read(source(plugin.getConfig()));
+            settings = Settings.read(source(plugin.getConfig()));
             if (settings.redis().enabled()) log.warn("Friends: redis (multi-proxy) is for Velocity/BungeeCord; ignored on Paper");
             storage = settings.openStorage(plugin.getDataFolder().toPath());
             Function<UUID, String> prefixes = plugin.getServer().getPluginManager().getPlugin("LuckPerms") != null ? LuckPermsPrefix::of : _ -> null;
@@ -78,6 +85,7 @@ public final class PaperFriends implements Listener {
             plugin.getCommand(entry.getKey()).setExecutor(command);
             plugin.getCommand(entry.getKey()).setTabCompleter(command);
         }
+        if (settings.privateMessages()) registerMessageCommands();
         // Explicit executors: no reflective @EventHandler scanning (or generated executors) of our classes.
         var events = plugin.getServer().getPluginManager();
         events.registerEvent(PlayerJoinEvent.class, this, EventPriority.MONITOR,
@@ -96,6 +104,45 @@ public final class PaperFriends implements Listener {
         runtime.close();
     }
 
+    /** Appends the sections new versions added to the server's config.yml (their own settings and comments stay). */
+    private void upgradeConfig() {
+        try (InputStream in = plugin.getResource("config.yml")) {
+            if (in == null) return;
+            List<String> added = ConfigUpgrade.addMissingSections(plugin.getDataFolder().toPath().resolve("config.yml"),
+                    new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            if (!added.isEmpty()) {
+                log.info("Friends: added the new settings {} to config.yml", added);
+                plugin.reloadConfig();
+            }
+        } catch (IOException e) {
+            log.warn("Friends: could not add new settings to config.yml ({}); using their defaults", e.getMessage());
+        }
+    }
+
+    /**
+     * /msg and /r go into the command map at enable time, not plugin.yml: so {@code private-messages.enabled: false}
+     * leaves them alone entirely, and a plugin that declares them (e.g. Essentials) keeps them; ours then stay
+     * reachable as /friends:msg and /friends:r. They still take over vanilla's /msg, /tell and /w.
+     */
+    private void registerMessageCommands() {
+        CommandMap map;
+        try { // public on CraftServer since 1.8 (and on Server in newer APIs), but not in the 1.8.8 API we build against
+            map = (CommandMap) plugin.getServer().getClass().getMethod("getCommandMap").invoke(plugin.getServer());
+        } catch (ReflectiveOperationException | ClassCastException e) {
+            log.warn("Friends: no command map on this server ({}); /msg and /r are unavailable", e.toString());
+            return;
+        }
+        register(map, new MessageCommand("msg", "msg", "Send a friend a private message", "/msg <friend> <message>", List.of("tell", "w", "whisper")));
+        register(map, new MessageCommand("r", "reply", "Reply to your last private message", "/r <message>", List.of("reply")));
+    }
+
+    private void register(CommandMap map, MessageCommand command) {
+        if (!map.register("friends", command)) {
+            log.warn("Friends: another plugin owns /{}; Friends' is /friends:{} (or set private-messages.enabled: false)",
+                    command.getName(), command.getName());
+        }
+    }
+
     private void join(Player player) {
         Online online = sessions.join(player);
         runtime.friends.connect(online).thenRun(() -> runtime.friends.greet(online));
@@ -111,10 +158,32 @@ public final class PaperFriends implements Listener {
             @Override public String string(String path, String def) { return config.getString(path, def); }
             @Override public int number(String path, int def) { return config.getInt(path, def); }
             @Override public boolean flag(String path, boolean def) { return config.getBoolean(path, def); }
+            @Override public List<?> list(String path) { List<?> l = config.getList(path); return l == null ? List.of() : l; }
         };
     }
 
-    /** /friend, /fl ("list") and /status ("status"). */
+    /** /msg ("msg") and /r ("reply"), registered at runtime (see {@link #registerMessageCommands}). */
+    private final class MessageCommand extends Command {
+        private final Cmd delegate;
+
+        MessageCommand(String name, String sub, String description, String usage, List<String> aliases) {
+            super(name, description, usage, aliases);
+            setPermission("friends.use");
+            this.delegate = new Cmd(sub);
+        }
+
+        @Override
+        public boolean execute(CommandSender sender, String label, String[] args) {
+            return !testPermission(sender) || delegate.onCommand(sender, this, label, args); // true: no usage line on top
+        }
+
+        @Override
+        public List<String> tabComplete(CommandSender sender, String alias, String[] args) {
+            return delegate.onTabComplete(sender, this, alias, args);
+        }
+    }
+
+    /** /friend, /fl ("list") and /status ("status"); /msg and /r through {@link MessageCommand}. */
     private final class Cmd implements TabExecutor {
         private final String sub;
 

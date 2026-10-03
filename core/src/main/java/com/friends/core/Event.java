@@ -29,6 +29,9 @@ public sealed interface Event {
 
     record Unfriended(UUID player, List<UUID> friends) implements Event {}
 
+    /** A private message, already vetted on the sender's proxy: the proxy {@code to} is on delivers it. No state. */
+    record PrivateMessage(PlayerRow from, UUID to, String text) implements Event {}
+
     /** A proxy (re)started or stopped heartbeating: forget everyone who was on it. */
     record ProxyDown(String proxy) implements Event {}
 }

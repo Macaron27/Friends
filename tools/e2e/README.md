@@ -24,4 +24,7 @@ Scenarios: `paper-<version>`, `folia-<version>` (the Paper jar on Folia), `load-
 `velocity[-<version>]` (proxy plugin, players and a Paper backend of that version, default 1.8.8), `mixed`
 (Alice through BungeeCord, Bob through Velocity, sharing MySQL and Redis), `api-<version>` / `api-bungee` /
 `api-velocity` (another plugin, [`probe`](probe), using the API: its events, one cancelled, reads and actions from its
-listeners and, on Paper, from the server thread; needs `./gradlew :probe:jar`).
+listeners and, on Paper, from the server thread; needs `./gradlew :probe:jar`), `upgrade-paper` / `upgrade-velocity`
+(the previous release's jar, then this build on the same database and config.yml: friendships kept, new config
+sections appended, new features working; set `FRIENDS_OLD_JARS` to a folder holding the previous `friends-paper.jar` /
+`friends-velocity.jar`).

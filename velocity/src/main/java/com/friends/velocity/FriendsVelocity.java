@@ -2,6 +2,7 @@ package com.friends.velocity;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
@@ -18,6 +19,7 @@ import org.slf4j.Logger;
 import org.spongepowered.configurate.ConfigurationNode;
 import org.spongepowered.configurate.yaml.YamlConfigurationLoader;
 
+import com.friends.core.ConfigUpgrade;
 import com.friends.core.FriendCommand;
 import com.friends.core.FriendsRuntime;
 import com.friends.core.LuckPermsPrefix;
@@ -68,8 +70,9 @@ public final class FriendsVelocity {
     @Subscribe
     public void onInit(ProxyInitializeEvent event) {
         Storage storage = null;
+        Settings settings;
         try {
-            Settings settings = Settings.read(source(loadConfig()));
+            settings = Settings.read(source(loadConfig()));
             storage = settings.openStorage(dataDir);
             Network network = RedisNetwork.open(settings, log);
             Function<UUID, String> prefixes = proxy.getPluginManager().isLoaded("luckperms") ? LuckPermsPrefix::of : _ -> null;
@@ -85,6 +88,13 @@ public final class FriendsVelocity {
         commands.register(commands.metaBuilder("friend").aliases("f", "friends").plugin(this).build(), new Cmd(runtime.command, platform, null, commandThreads));
         commands.register(commands.metaBuilder("fl").plugin(this).build(), new Cmd(runtime.command, platform, "list", commandThreads));
         commands.register(commands.metaBuilder("status").plugin(this).build(), new Cmd(runtime.command, platform, "status", commandThreads));
+        if (settings.privateMessages()) {
+            for (String alias : List.of("msg", "tell", "w", "whisper", "r", "reply")) {
+                if (commands.hasCommand(alias)) log.warn("Friends: /{} is already registered by another plugin; Friends replaces it (private-messages.enabled: false keeps theirs)", alias);
+            }
+            commands.register(commands.metaBuilder("msg").aliases("tell", "w", "whisper").plugin(this).build(), new Cmd(runtime.command, platform, "msg", commandThreads));
+            commands.register(commands.metaBuilder("r").aliases("reply").plugin(this).build(), new Cmd(runtime.command, platform, "reply", commandThreads));
+        }
     }
 
     @Subscribe
@@ -114,16 +124,21 @@ public final class FriendsVelocity {
 
     private ConfigurationNode loadConfig() throws IOException {
         Path file = dataDir.resolve("config.yml");
+        String bundled;
+        try (InputStream in = FriendsVelocity.class.getResourceAsStream("/config.yml")) {
+            bundled = new String(Objects.requireNonNull(in, "config.yml missing from the plugin jar").readAllBytes(), StandardCharsets.UTF_8);
+        }
         if (Files.notExists(file)) {
             Files.createDirectories(dataDir);
-            try (InputStream in = FriendsVelocity.class.getResourceAsStream("/config.yml")) {
-                Files.copy(Objects.requireNonNull(in, "config.yml missing from the plugin jar"), file);
-            }
+            Files.writeString(file, bundled);
+        } else {
+            List<String> added = ConfigUpgrade.addMissingSections(file, bundled);
+            if (!added.isEmpty()) log.info("Friends: added the new settings {} to config.yml", added);
         }
         return YamlConfigurationLoader.builder().path(file).build().load();
     }
 
-    private static Settings.Source source(ConfigurationNode root) {
+    static Settings.Source source(ConfigurationNode root) {
         return new Settings.Source() {
             private ConfigurationNode node(String path) {
                 return root.node((Object[]) path.split("\\."));
@@ -132,6 +147,7 @@ public final class FriendsVelocity {
             @Override public String string(String path, String def) { return node(path).getString(def); }
             @Override public int number(String path, int def) { return node(path).getInt(def); }
             @Override public boolean flag(String path, boolean def) { return node(path).getBoolean(def); }
+            @Override public List<?> list(String path) { return node(path).raw() instanceof List<?> l ? l : List.of(); }
         };
     }
 
@@ -147,7 +163,7 @@ public final class FriendsVelocity {
         }
     }
 
-    /** Routes /friend, /fl ("list") and /status ("status") into the shared command parser. */
+    /** Routes /friend, /fl ("list"), /status ("status"), /msg ("msg") and /r ("reply") into the shared command parser. */
     record Cmd(FriendCommand command, VelocityPlatform platform, String sub, Executor commands) implements SimpleCommand {
         @Override
         public void execute(Invocation invocation) {
