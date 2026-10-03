@@ -97,6 +97,8 @@ final class Messages {
             mm("<yellow>/f nickname \\<player> [nickname] <gray>- <aqua>Set a nickname only you can see"),
             mm("<yellow>/f removeall <gray>- <aqua>Remove all friends except best friends"),
             mm("<yellow>/f notifications <gray>- <aqua>Toggle friend join/leave messages"),
+            mm("<yellow>/f ignore [player] <gray>- <aqua>Ignore a player (alone: list who you ignore)"),
+            mm("<yellow>/f unignore \\<player> <gray>- <aqua>Stop ignoring a player"),
             mm("<yellow>/status [online|away|busy|offline] <gray>- <aqua>Set your online status")};
     private static final Component HELP = box(HELP_LINES);
     private static final Component HELP_WITH_MESSAGES = box(Stream.concat(Arrays.stream(HELP_LINES), Stream.of(
@@ -297,10 +299,76 @@ final class Messages {
                 Placeholder.unparsed("seen", LastSeen.format(lastSeen, now))));
     }
 
+    /** {@code wait}: until the oldest message in the window leaves it (rounded up to whole seconds). */
+    static Component tooFast(Duration wait) {
+        long seconds = Math.max(1, (wait.toMillis() + 999) / 1000);
+        return box(mm("<red>You're sending messages too fast! Try again in <n> second<s>.",
+                Placeholder.unparsed("n", Long.toString(seconds)), Placeholder.unparsed("s", seconds == 1 ? "" : "s")));
+    }
+
+    private static final Component AFK_TEXT = text("I'm currently AFK, and will answer when I am available.", GRAY, TextDecoration.ITALIC);
+    private static final Component AUTO_REPLY = text(" (auto-reply)", DARK_GRAY);
+
+    /** What a friend whose status is Away "answers": a private message line, marked as automatic. */
+    static Component afkReply(Component name, String username) {
+        return text().append(FROM).append(name).append(COLON).append(AFK_TEXT).append(AUTO_REPLY)
+                .clickEvent(ClickEvent.suggestCommand("/msg " + username + " "))
+                .hoverEvent(HoverEvent.showText(text("Click to reply", GRAY)))
+                .build();
+    }
+
     private static final Component NOBODY_TO_REPLY = box(mm("<red>You have nobody to reply to! Use <yellow>/msg \\<friend> \\<message>"));
 
     static Component nobodyToReply() {
         return NOBODY_TO_REPLY;
+    }
+
+    // --- ignore ---
+
+    private static final Component IGNORE_SELF = box(mm("<red>You can't ignore yourself!"));
+
+    static Component ignoreSelf() {
+        return IGNORE_SELF;
+    }
+
+    static Component alreadyIgnoring(Component p) {
+        return box(mm("<yellow>You're already ignoring <player><yellow>.", player(p)));
+    }
+
+    static Component ignored(Component p, boolean wasFriend) {
+        Component done = mm("<green>You're now ignoring <player><green>: they can't message you or send you friend requests.", player(p));
+        return wasFriend ? box(done, mm("<gray>They were removed from your friends list (they aren't told).")) : box(done);
+    }
+
+    static Component notIgnoring(String input) {
+        return box(mm("<red>You aren't ignoring '<name>'!", Placeholder.unparsed("name", input)));
+    }
+
+    static Component unignored(Component p) {
+        return box(mm("<green>You're no longer ignoring <player><green>.", player(p)));
+    }
+
+    private static final Component NOBODY_IGNORED = box(mm("<yellow>You aren't ignoring anyone. To block a player: <aqua>/f ignore \\<player>"));
+
+    /** Each name suggests (doesn't run) {@code /f unignore}: one click shouldn't undo an ignore. */
+    static Component ignoreList(List<String> names) {
+        if (names.isEmpty()) return NOBODY_IGNORED;
+        var line = text();
+        for (int i = 0; i < names.size(); i++) {
+            if (i > 0) line.append(text(", ", DARK_GRAY));
+            line.append(text(names.get(i), GRAY).clickEvent(ClickEvent.suggestCommand("/f unignore " + names.get(i)))
+                    .hoverEvent(HoverEvent.showText(text("Click to unignore", GRAY))));
+        }
+        return box(mm("<yellow>Ignored players (<count>):", Placeholder.unparsed("count", Integer.toString(names.size()))), line.build());
+    }
+
+    static Component youIgnore(Component p, String username) {
+        return box(mm("<red>You're ignoring <player><red>! Use <yellow>/f unignore <name></yellow> first.", player(p),
+                Placeholder.unparsed("name", username)));
+    }
+
+    static Component cantRequest(Component p) {
+        return box(mm("<red>You can't send <player> <red>a friend request.", player(p)));
     }
 
     // --- notifications ---

@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
+import com.friends.api.PlayerActivity;
 import com.friends.api.Status;
 import com.friends.api.velocity.FriendAddEvent;
 import com.friends.api.velocity.FriendAddedEvent;
@@ -12,6 +13,7 @@ import com.friends.api.velocity.FriendRemoveEvent;
 import com.friends.api.velocity.FriendRemovedEvent;
 import com.friends.api.velocity.FriendRequestSendEvent;
 import com.friends.api.velocity.FriendStatusChangeEvent;
+import com.friends.api.velocity.PlayerActivityChangeEvent;
 import com.friends.core.Friend;
 import com.friends.core.Hooks;
 import com.friends.core.Storage.PlayerRow;
@@ -59,6 +61,11 @@ final class VelocityHooks implements Hooks {
     public String messaging(PlayerRow from, PlayerRow to, String message) {
         FriendMessageEvent event = new FriendMessageEvent(from.id(), from.name(), to.id(), to.name(), message);
         return allowed(event) ? event.getMessage() : null;
+    }
+
+    @Override
+    public void activityChanged(PlayerRow player, PlayerActivity from, PlayerActivity to) {
+        fire.apply(new PlayerActivityChangeEvent(player.id(), player.name(), from, to)).join();
     }
 
     /** Waits for every listener, then reads their verdict. */

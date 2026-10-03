@@ -10,12 +10,26 @@ import java.util.Map;
 
 /** The plugin's config.yml, identical on every platform; each reads its YAML through a {@link Source}. */
 public record Settings(String storage, String sqliteFile, Mysql mysql, Redis redis, Duration requestExpiry, int maxFriends,
-                       boolean privateMessages, Activities activities, List<String> warnings) {
+                       boolean privateMessages, RateLimit rateLimit, Activities activities, List<String> warnings) {
 
     public record Mysql(String host, int port, String database, String user, String password, boolean ssl) {}
 
     public record Redis(boolean enabled, String host, int port, String password, int database, boolean ssl,
                         String proxyId, String namespace) {}
+
+    /** {@code private-messages.rate-limit}: at most {@code messages} private messages per sender within any {@code window}. */
+    public record RateLimit(int messages, Duration window) {
+        public static final RateLimit NONE = new RateLimit(0, Duration.ZERO);
+
+        public boolean enabled() {
+            return messages > 0 && window.isPositive();
+        }
+
+        @Override
+        public String toString() {
+            return enabled() ? messages + " per " + window.toSeconds() + "s" : "off";
+        }
+    }
 
     /** Dotted-path lookups with defaults, backed by the platform's config API. */
     public interface Source {
@@ -48,7 +62,14 @@ public record Settings(String storage, String sqliteFile, Mysql mysql, Redis red
                         s.string("redis.proxy-id", ""), s.string("redis.namespace", "friends")),
                 Duration.ofMinutes(Math.max(1, s.number("request-expiry-minutes", 5))),
                 Math.max(1, s.number("max-friends", 5000)),
-                s.flag("private-messages.enabled", true), activities, List.copyOf(warnings));
+                s.flag("private-messages.enabled", true), rateLimit(s), activities, List.copyOf(warnings));
+    }
+
+    /** 0 (or less) for either value turns it off. */
+    private static RateLimit rateLimit(Source s) {
+        int messages = s.number("private-messages.rate-limit.messages", 3);
+        int seconds = s.number("private-messages.rate-limit.seconds", 3);
+        return messages > 0 && seconds > 0 ? new RateLimit(messages, Duration.ofSeconds(seconds)) : RateLimit.NONE;
     }
 
     public boolean usesMysql() {

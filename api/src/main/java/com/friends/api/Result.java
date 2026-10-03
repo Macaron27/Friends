@@ -1,6 +1,6 @@
 package com.friends.api;
 
-/** Outcome of a {@link FriendsAPI} action. */
+/** Outcome of a {@link FriendsAPI} action. New constants are only ever added last, so ordinals never move. */
 public enum Result {
     /** Done: the request was sent, accepted or denied, the friend removed, or the setting changed. */
     SUCCESS,
@@ -30,8 +30,12 @@ public enum Result {
     CANCELLED,
     /** A database error (Friends logs it). */
     ERROR,
-    /** The target is offline, or appearing offline (private messages). Last, so earlier ordinals never move. */
-    NOT_ONLINE;
+    /** The target is offline, or appearing offline (private messages). */
+    NOT_ONLINE,
+    /** The sender is sending private messages too fast ({@code private-messages.rate-limit}). */
+    RATE_LIMITED,
+    /** One of the two players ignores the other ({@code /f ignore}): no friend requests between them. */
+    IGNORED;
 
     /**
      * Whether the action happened.

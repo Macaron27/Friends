@@ -37,9 +37,16 @@ redis:
 
 # Private messages between friends: /msg <friend> <message> (also /tell, /w, /whisper) and /r <message> (/reply).
 # false: Friends doesn't register those commands, e.g. when another plugin provides them. Plugins can also cancel
-# FriendMessageEvent to deliver messages themselves.
+# FriendMessageEvent to deliver messages themselves. A friend whose /status is away still gets the message, and the
+# sender an "I'm currently AFK" auto-reply (once every 5 minutes per friend). Players blocked with /f ignore can't
+# message (or friend) whoever ignores them.
 private-messages:
   enabled: true
+  # Anti-spam: at most this many messages per player within this many seconds (0 = no limit). Over the limit the
+  # message is blocked, and the sender told how long to wait.
+  rate-limit:
+    messages: 3
+    seconds: 3
 
 # What friends see a player doing, from the name of the backend server they are on (proxies only): "● Bob — Playing
 # BedWars Solo" in /f list, and FriendsAPI.getActivity. Each pattern is a regular expression that must match the whole

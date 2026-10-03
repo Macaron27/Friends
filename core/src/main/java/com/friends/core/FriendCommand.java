@@ -19,7 +19,7 @@ import com.friends.core.Platform.Online;
  */
 public final class FriendCommand {
     private static final List<String> SUBCOMMANDS = List.of("add", "accept", "deny", "list", "requests", "remove",
-            "best", "nickname", "removeall", "notifications", "status", "help");
+            "best", "nickname", "removeall", "notifications", "status", "ignore", "unignore", "help");
     private static final int MAX_SUGGESTIONS = 100;
 
     private final Friends friends;
@@ -66,6 +66,8 @@ public final class FriendCommand {
             case "removeall" -> friends.removeAll(s, args.length > 1 && "confirm".equalsIgnoreCase(args[1]));
             case "notifications", "notification", "notif" -> friends.toggleNotifications(s);
             case "status" -> status(s, args.length > 1 ? args[1] : null);
+            case "ignore" -> arg == null ? friends.ignoreList(s) : friends.ignore(s, arg);
+            case "unignore" -> arg == null ? usage(s, "/f unignore <player>") : friends.unignore(s, arg);
             default -> args.length == 1 ? friends.add(s, Target.named(args[0])) : friends.help(s, privateMessages); // "/f Steve" = "/f add Steve"
         };
         return result.exceptionally(_ -> {
@@ -123,6 +125,12 @@ public final class FriendCommand {
                         .filter(n -> !n.equalsIgnoreCase(s.name()) && !friendNames.contains(n.toLowerCase(Locale.ROOT))), prefix);
             }
             case "accept", "deny", "decline" -> filter(friends.requesterNames(s.id()).stream(), prefix);
+            case "ignore" -> {
+                var ignored = friends.ignoredNames(s.id()).stream().map(n -> n.toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
+                yield filter(friends.onlineNames().stream()
+                        .filter(n -> !n.equalsIgnoreCase(s.name()) && !ignored.contains(n.toLowerCase(Locale.ROOT))), prefix);
+            }
+            case "unignore" -> filter(friends.ignoredNames(s.id()).stream(), prefix);
             case "remove", "delete", "best", "nickname", "nick" -> filter(friends.friendNames(s.id()).stream(), prefix);
             case "msg" -> privateMessages ? filter(friends.onlineFriendNames(s.id()).stream(), prefix) : List.of();
             case "list" -> filter(Stream.of("best"), prefix);

@@ -40,6 +40,10 @@ def cmd(bot, line, expect, timeout=10):
 PRESENCE = {"presence.rules": [{"pattern": "LOB.*", "game": "BedWars", "mode": "Solo"}]}
 
 
+def said_since(bot, mark):
+    return "\n".join(text for text, _ in bot.messages[mark:])
+
+
 def friend_flow(alice, bob, where):
     """The same player story on every platform. `where`: how Alice sees Bob online ("— Online" / "— Playing ...")."""
     cmd(alice, "/f", "Friend Commands:")
@@ -60,6 +64,17 @@ def friend_flow(alice, bob, where):
     mark = alice.mark()
     cmd(bob, "/r hello back", "To Alice: hello back")
     alice.wait_for("From Bob: hello back", mark)
+    # 0.7.0: an away friend still gets the message, the sender an auto-reply; then the rate limit (3 per 3 s).
+    cmd(bob, "/status away", "Your status is now Away.")
+    mark = bob.mark()
+    cmd(alice, "/msg Bob you there?", "From Bob: I'm currently AFK, and will answer when I am available. (auto-reply)")
+    bob.wait_for("From Alice: you there?", mark)
+    cmd(bob, "/status online", "Your status is now Online.")
+    time.sleep(3)  # an empty rate-limit window
+    for n in (1, 2, 3):
+        cmd(bob, f"/r spam {n}", f"To Alice: spam {n}")
+    cmd(bob, "/r spam 4", "You're sending messages too fast! Try again in ")
+    time.sleep(3)
     cmd(alice, "/f nickname Bob Bobby", "You'll now see Bob as Bobby.")
     mark = alice.mark()
     bob.close()
@@ -70,6 +85,18 @@ def friend_flow(alice, bob, where):
     bob.connect()
     alice.wait_for("Friend > Bobby joined.", mark)
     time.sleep(1)
+    # 0.7.0: ignoring silently ends the friendship and blocks messages and requests, until unignored.
+    mark, bob_mark = alice.mark(), bob.mark()
+    cmd(alice, "/f ignore Bob", "They were removed from your friends list (they aren't told).")
+    cmd(bob, "/msg Alice psst", "'Alice' isn't on your friends list!")
+    cmd(bob, "/f add Alice", "You can't send Alice a friend request.")
+    cmd(alice, "/f ignore", "Ignored players (1):")
+    assert "psst" not in said_since(alice, mark) and "Friend request" not in said_since(alice, mark), said_since(alice, mark)
+    assert "Alice" not in said_since(bob, bob_mark).replace("'Alice' isn't", "").replace("send Alice a", ""), said_since(bob, bob_mark)
+    cmd(alice, "/f list", "You don't have any friends yet!")
+    cmd(alice, "/f unignore Bob", "You're no longer ignoring Bob.")
+    cmd(bob, "/f add Alice", "You sent a friend request to Alice!")
+    cmd(alice, "/f accept Bob", "You are now friends with Bob")
     cmd(alice, "/f remove Bob", "You removed Bob from your friends list!")
     cmd(alice, "/f list", "You don't have any friends yet!")
 
@@ -260,21 +287,25 @@ def scenario_upgrade(jars, kind):
         srv.stop(stop)
         with open(config) as f:
             before = f.read()
-        assert "presence:" not in before, "not an older config"
+        assert "rate-limit:" not in before, "not an older config"
 
         os.remove(os.path.join(srv.folder, "plugins", os.path.basename(old)))
         shutil.copy(PLUGIN[kind], os.path.join(srv.folder, "plugins"))
         srv.lines = []
         srv.start()
-        srv.wait_log(r"added the new settings \[private-messages, presence\] to config.yml")
+        srv.wait_log(r"added the new settings \[.+\] to config.yml")  # 0.5.0: whole sections; 0.6.0: rate-limit
         with open(config) as f:
             after = f.read()
-        assert after.startswith(before) and "\npresence:\n" in after, "the old config.yml is kept, new sections appended"
+        kept = iter(after.splitlines())
+        assert all(line in kept for line in before.splitlines()), "every line of the old config.yml is kept, in order"
+        assert "\npresence:\n" in after and "\n  rate-limit:\n    messages: 3\n" in after, after
         alice, bob = players(port, protocol)
         cmd(alice, "/fl", "● Bobby — ")  # the friendship and nickname survived, shown the new way
         mark = bob.mark()
         cmd(alice, "/w Bob upgraded", "To Bobby: upgraded")  # /w: ours, not vanilla's
         bob.wait_for("From Alice: upgraded", mark)
+        cmd(alice, "/f ignore Bob", "You're now ignoring Bob")  # the new table, created in the old database
+        cmd(bob, "/msg Alice hi", "'Alice' isn't on your friends list!")
         for b in (alice, bob):
             b.close()
         check_clean(srv)

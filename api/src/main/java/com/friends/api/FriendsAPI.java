@@ -114,6 +114,7 @@ public interface FriendsAPI {
      * @param player a player's UUID
      * @return e.g. BedWars / Solo; empty on Paper, while connecting, if no rule matches their server, if offline, or
      *         if they appear offline
+     * @see LastSeen#line
      */
     Optional<PlayerActivity> getActivity(UUID player);
 
@@ -155,7 +156,8 @@ public interface FriendsAPI {
      * @return {@link Result#SUCCESS} (sent), {@link Result#BECAME_FRIENDS}, or why not: {@link Result#NOT_LOADED},
      *         {@link Result#SELF}, {@link Result#PLAYER_NOT_FOUND}, {@link Result#ALREADY_FRIENDS},
      *         {@link Result#ALREADY_REQUESTED}, {@link Result#LIMIT_REACHED}, {@link Result#TARGET_LIMIT_REACHED},
-     *         {@link Result#CANCELLED}, {@link Result#INVALID_ARGUMENT}, {@link Result#ERROR}
+     *         {@link Result#IGNORED} (either one ignores the other), {@link Result#CANCELLED},
+     *         {@link Result#INVALID_ARGUMENT}, {@link Result#ERROR}
      */
     CompletableFuture<Result> sendRequest(UUID sender, UUID target);
 
@@ -166,8 +168,8 @@ public interface FriendsAPI {
      * @param player a loaded player who received a request
      * @param sender who sent it
      * @return {@link Result#SUCCESS}, or {@link Result#NOT_LOADED}, {@link Result#NO_REQUEST},
-     *         {@link Result#LIMIT_REACHED}, {@link Result#TARGET_LIMIT_REACHED}, {@link Result#CANCELLED},
-     *         {@link Result#INVALID_ARGUMENT}, {@link Result#ERROR}
+     *         {@link Result#LIMIT_REACHED}, {@link Result#TARGET_LIMIT_REACHED}, {@link Result#IGNORED} ({@code player}
+     *         ignores {@code sender}), {@link Result#CANCELLED}, {@link Result#INVALID_ARGUMENT}, {@link Result#ERROR}
      */
     CompletableFuture<Result> acceptRequest(UUID player, UUID sender);
 
@@ -222,4 +224,23 @@ public interface FriendsAPI {
      *         {@link Result#INVALID_ARGUMENT}
      */
     CompletableFuture<Result> setStatus(UUID player, Status status);
+
+    /**
+     * {@code /msg}: sends a friend a private message, with every rule of the command: the receiver must be a friend
+     * who is visibly online anywhere on the network, the sender's {@code private-messages.rate-limit} applies, and
+     * the message event fires first (a plugin may cancel or rewrite it). Works with {@code private-messages.enabled:
+     * false} too, which only leaves the commands to another plugin.
+     *
+     * <p>The sender sees no "To ..." echo (they get no chat reply, like every action), but a friend whose status is
+     * {@link Status#AWAY} still answers with the AFK auto-reply in their chat. Ignoring a player removes them as a
+     * friend, so messaging someone who ignores you gives {@link Result#NOT_FRIENDS}: an ignore is never revealed.
+     *
+     * @param sender   a loaded player
+     * @param receiver one of their friends
+     * @param message  plain text, never parsed (colour codes and control characters are removed)
+     * @return {@link Result#SUCCESS} (delivered), or {@link Result#NOT_LOADED}, {@link Result#NOT_FRIENDS},
+     *         {@link Result#NOT_ONLINE}, {@link Result#RATE_LIMITED}, {@link Result#CANCELLED},
+     *         {@link Result#INVALID_ARGUMENT} (null, or nothing printable), {@link Result#ERROR}
+     */
+    CompletableFuture<Result> sendMessage(UUID sender, UUID receiver, String message);
 }

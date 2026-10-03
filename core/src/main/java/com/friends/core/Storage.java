@@ -9,8 +9,10 @@ import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,7 +28,8 @@ public final class Storage implements AutoCloseable {
 
     public record PlayerRow(UUID id, String name, String prefix, Instant lastSeen) {}
 
-    public record Loaded(boolean notifications, Status status, List<Friend> friends) {}
+    /** {@code ignored}: the players they ignore, id to name. */
+    public record Loaded(boolean notifications, Status status, List<Friend> friends, Map<UUID, String> ignored) {}
 
     private final HikariDataSource ds;
     private final boolean mysql;
@@ -109,6 +112,14 @@ public final class Storage implements AutoCloseable {
                       nickname VARCHAR(16),
                       PRIMARY KEY (player, friend)
                     )""");
+            // 0.7.0. Created on first start like the others, so upgrading needs no migration step.
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS friends_ignores (
+                      player CHAR(36) NOT NULL,
+                      ignored CHAR(36) NOT NULL,
+                      since BIGINT NOT NULL,
+                      PRIMARY KEY (player, ignored)
+                    )""");
         }
     }
 
@@ -181,7 +192,7 @@ public final class Storage implements AutoCloseable {
         }
     }
 
-    /** Settings plus the full friend list with each friend's cached name/prefix/last-seen, in two queries. */
+    /** Settings, the full friend list with each friend's cached name/prefix/last-seen, and the ignore list: three queries. */
     public Loaded load(UUID id) throws SQLException {
         try (Connection c = ds.getConnection()) {
             boolean notifications = true;
@@ -211,7 +222,20 @@ public final class Storage implements AutoCloseable {
                     }
                 }
             }
-            return new Loaded(notifications, status, friends);
+            Map<UUID, String> ignored = new HashMap<>();
+            try (PreparedStatement p = c.prepareStatement("""
+                    SELECT i.ignored, p.name FROM friends_ignores i LEFT JOIN friends_players p ON p.uuid = i.ignored
+                    WHERE i.player = ?""")) {
+                p.setString(1, id.toString());
+                try (ResultSet rs = p.executeQuery()) {
+                    while (rs.next()) {
+                        String other = rs.getString(1);
+                        String name = rs.getString(2);
+                        ignored.put(UUID.fromString(other), name != null ? name : other);
+                    }
+                }
+            }
+            return new Loaded(notifications, status, friends, ignored);
         }
     }
 
@@ -273,6 +297,27 @@ public final class Storage implements AutoCloseable {
 
     public void setStatus(UUID id, Status status) throws SQLException {
         update("UPDATE friends_players SET status = ? WHERE uuid = ?", status.name(), id.toString());
+    }
+
+    public void addIgnore(UUID player, UUID ignored, Instant since) throws SQLException {
+        update((mysql ? "INSERT IGNORE" : "INSERT OR IGNORE") + " INTO friends_ignores (player, ignored, since) VALUES (?, ?, ?)",
+                player.toString(), ignored.toString(), since.toEpochMilli());
+    }
+
+    public void removeIgnore(UUID player, UUID ignored) throws SQLException {
+        update("DELETE FROM friends_ignores WHERE player = ? AND ignored = ?", player.toString(), ignored.toString());
+    }
+
+    /** Whether {@code player} ignores {@code other}. */
+    public boolean ignores(UUID player, UUID other) throws SQLException {
+        try (Connection c = ds.getConnection();
+             PreparedStatement p = c.prepareStatement("SELECT 1 FROM friends_ignores WHERE player = ? AND ignored = ?")) {
+            p.setString(1, player.toString());
+            p.setString(2, other.toString());
+            try (ResultSet rs = p.executeQuery()) {
+                return rs.next();
+            }
+        }
     }
 
     private void update(String sql, Object... args) throws SQLException {
