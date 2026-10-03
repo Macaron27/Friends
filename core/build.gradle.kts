@@ -52,6 +52,7 @@ for (version in listOf("3.7.2", "3.21.0.1")) {
         filter {
             includeTestsMatching("com.friends.core.StorageTest")
             includeTestsMatching("com.friends.core.FriendsTest")
+            includeTestsMatching("com.friends.core.ModerationTest")
         }
         jvmArgs("--enable-native-access=ALL-UNNAMED")
         // 3.21.0.1 has no Apple Silicon native (Linux x86_64/aarch64 are fine); 3.7.2 falls back to pure Java.

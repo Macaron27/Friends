@@ -1,8 +1,8 @@
 # Friends API
 
 Lets other plugins read friend lists, presence and requests, act on behalf of players and react to friend events.
-The same `FriendsAPI` exists on Paper, Velocity and BungeeCord. Each platform also has seven events
-(`com.friends.api.bukkit`, `.velocity`, `.bungee`). The API is Java 8 bytecode with no dependencies of its own, so
+The same `FriendsAPI` exists on Paper, Velocity and BungeeCord. Each platform also has its events
+(`com.friends.api.bukkit`, `.velocity`, `.bungee`: seven, plus `PlayerActivityChangeEvent` on the proxies). The API is Java 8 bytecode with no dependencies of its own, so
 any plugin can compile against it. Every public type and method has Javadoc (`./gradlew :api:javadoc`).
 
 ## 1. Add the dependency
@@ -23,7 +23,7 @@ Or install it in your local Maven repository from this repository:
 
 ```kotlin
 repositories { mavenLocal() }
-dependencies { compileOnly("com.friends:friends-api:0.6.0") }
+dependencies { compileOnly("com.friends:friends-api:0.7.0") }
 ```
 
 Then make your plugin load after Friends:
@@ -67,7 +67,15 @@ For menus, scoreboards and other UIs, `LastSeen` words times like Friends' chat 
 String online = friends.getActivity(id).map(PlayerActivity::describe).orElse("Online");
 String offline = LastSeen.format(friend.getLastSeen());           // "Last seen 17 minutes ago"
 String ago = LastSeen.ago(friend.getLastSeen(), Instant.now());   // "17 minutes ago", "3 days ago", "just now"
+
+// Outside the game (websites, Discord, menus with emoji fonts): one string with an emoji.
+boolean visible = friends.getStatus(id).filter(s -> s != Status.OFFLINE).isPresent();
+LastSeen.presence(visible, friend.getLastSeen());                  // "🟢 Online" or "⚫ Last seen 17 minutes ago"
+LastSeen.line(friend.getName(), visible, friends.getActivity(id).orElse(null), friend.getLastSeen());
+                                                                   // "🟢 Bob — Playing BedWars Solo", "⚫ Bob — Last seen 3 days ago"
 ```
+
+In game, Friends' own chat uses a coloured `●` instead: 1.8 clients' fonts have no `🟢`.
 `FriendRequest` gives `getSender()`, `getSenderName()`, `getTarget()`, `getTargetName()` and `getExpiresAt()`.
 
 ## 4. Load and act (asynchronous)
@@ -85,9 +93,21 @@ friends.sendRequest(alice, bob).thenAccept(result -> {
 });
 ```
 
-The actions are `sendRequest`, `acceptRequest`, `denyRequest`, `removeFriend`, `setBestFriend`, `setNickname` and
-`setStatus`. Each one behaves like its command, events and limits included. The acting player must be loaded, and
-gets no chat reply: the `Result` tells you what happened. The other player is still notified.
+The actions are `sendRequest`, `acceptRequest`, `denyRequest`, `removeFriend`, `setBestFriend`, `setNickname`,
+`setStatus` and `sendMessage`. Each one behaves like its command, events and limits included. The acting player must
+be loaded, and gets no chat reply: the `Result` tells you what happened. The other player is still notified.
+
+```java
+friends.sendMessage(alice, bob, "GG!").thenAccept(result -> {
+    // SUCCESS (delivered), NOT_FRIENDS, NOT_ONLINE, RATE_LIMITED (private-messages.rate-limit), CANCELLED (an event
+    // listener took over), NOT_LOADED, INVALID_ARGUMENT
+});
+```
+
+`sendMessage` is `/msg`: friends only, rate-limited, and it fires `FriendMessageEvent`. If Bob's status is away, Alice
+still gets his AFK auto-reply in her chat. Someone who ignores Alice has also removed her as a friend, so she gets
+`NOT_FRIENDS`: an ignore is never revealed. `sendRequest` between two players where one ignores the other gives
+`IGNORED`.
 
 ## 5. Listen to events
 
@@ -99,7 +119,13 @@ gets no chat reply: the `Result` tells you what happened. The other player is st
 | `FriendRemoveEvent` | yes | before a friendship ends, once per friend (`/f removeall` too) |
 | `FriendRemovedEvent` | no | after, exactly once |
 | `FriendStatusChangeEvent` | yes | before `/status` changes |
-| `FriendMessageEvent` | yes | before a private message (`/msg`, `/r`) is delivered; `setMessage` rewrites it |
+| `FriendMessageEvent` | yes | before a private message (`/msg`, `/r`, `sendMessage`) is delivered; `setMessage` rewrites it |
+| `PlayerActivityChangeEvent` | no | Velocity and BungeeCord: after a player's activity changes (join, server switch, leave) |
+
+`/f ignore` ends a friendship without `FriendRemoveEvent` (it can't be vetoed); `FriendRemovedEvent` still fires.
+`PlayerActivityChangeEvent` has `getPlayerId()`, `getPlayerName()`, `getOldActivity()` and `getNewActivity()`
+(`Optional<PlayerActivity>`, empty when no `presence.rules` pattern matches, or on join/leave). It reports players who
+appear offline too: check `getStatus` before showing it to anyone.
 
 Pair events have `getPlayerId()` / `getPlayerName()` (the acting player) and `getTargetId()` / `getTargetName()`. The
 status event has `getOldStatus()` / `getNewStatus()`. `FriendAddedEvent` also has `getSince()`.

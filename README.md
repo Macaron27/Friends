@@ -50,6 +50,7 @@ SQLite driver: Paper 1.12.2's has no Apple Silicon build (Linux x86_64/ARM are f
 | `/f nickname <player> [nickname]` | Nickname only you can see (in your list and notifications). No nickname = clear. |
 | `/f removeall [confirm]` | Remove every friend except best friends, after a clickable confirmation. |
 | `/f notifications` | Toggle "Friend > X joined./left." messages. |
+| `/f ignore <player>` / `/f unignore <player>` | Block a player (anyone who joined before): no private messages or friend requests from them, either way. Silently ends a friendship with them (nobody is told) and drops pending requests. `/f ignore` alone lists who you ignore. |
 | `/status [online\|away\|busy\|offline]` | Status shown to friends; `offline` = appear offline (no join/leave messages). |
 
 Private messages (friends only, network-wide; turn off with `private-messages.enabled: false`):
@@ -58,6 +59,12 @@ Private messages (friends only, network-wide; turn off with `private-messages.en
 |---|---|
 | `/msg <friend> <message>` (also `/tell`, `/w`, `/whisper`) | Message a friend who is online and not appearing offline. Offline: "Bob is offline. (Last seen 3 days ago)". |
 | `/r <message>` (also `/reply`) | Answer whoever you last messaged or heard from. Clicking a message line also starts a reply. |
+
+- **Anti-spam:** at most 3 messages per 3 seconds per player (`private-messages.rate-limit`); over that, the message
+  is blocked and the sender told how long to wait.
+- **AFK auto-reply:** a friend whose status is away (`/status away`) still gets the message, and the sender sees
+  "From Bob: I'm currently AFK, and will answer when I am available. (auto-reply)", at most once every 5 minutes per
+  friend.
 
 `/f list` shows each friend's presence:
 
@@ -74,7 +81,8 @@ permission check (no permission defaults there).
 
 The same file on every platform: `storage.type` `sqlite` or `mysql` (MySQL/MariaDB), `request-expiry-minutes`
 (default 5), `max-friends` (default 5000), the `redis` section (proxies only; ignored on Paper),
-`private-messages.enabled` (default true) and `presence.rules` (proxies only):
+`private-messages.enabled` (default true), `private-messages.rate-limit` (`messages: 3` per `seconds: 3`; 0 = no
+limit) and `presence.rules` (proxies only):
 
 ```yaml
 presence:
@@ -93,9 +101,14 @@ A rule with an invalid regex or without a game is skipped with a warning at star
 
 ## Upgrading
 
-Replace the jar and restart: no database migration. Sections a new version adds (in 0.6.0: `private-messages` and
-`presence`) are appended to your `config.yml` with their comments at startup; nothing you wrote is changed.
+Replace the jar and restart: no database migration (new tables are created at startup). What a new version adds to
+the config is added to your `config.yml` with its comments at startup: new sections at the end (0.6.0:
+`private-messages` and `presence`), new keys at the end of their section, indented like yours (0.7.0:
+`private-messages.rate-limit`). Nothing you wrote is changed; the startup log lists what was added.
 
+- **0.7.0 adds `/f ignore`, `/f unignore`, the message rate limit and AFK auto-replies.** Ignore lists live in a new
+  `friends_ignores` table. On a multi-proxy network, upgrade every proxy: a proxy still on 0.6.0 doesn't check ignore
+  lists, so players on it can still send friend requests to someone who ignores them (who can't accept them).
 - **0.6.0 adds `/msg`, `/tell`, `/w`, `/whisper`, `/r` and `/reply`** (friends only). If another plugin provides them,
   set `private-messages.enabled: false`. On Paper, a plugin that declares `/msg` in its plugin.yml (e.g. Essentials)
   keeps it and Friends' becomes `/friends:msg` (logged); on the proxies Friends replaces an existing `/msg` (logged).
@@ -119,8 +132,10 @@ Use the plugin either on the proxies or on standalone Paper servers, not both.
 ## API for other plugins
 
 `FriendsAPI` is the same on Paper, Velocity and BungeeCord: friend lists, status, current server and pending
-requests, activity, actions (request, accept, deny, remove, best friend, nickname, status) and seven events per
-platform (including a cancellable `FriendMessageEvent` to plug in your own chat system). See
+requests, activity, actions (request, accept, deny, remove, best friend, nickname, status, private message) and
+events on every platform (including a cancellable `FriendMessageEvent` to plug in your own chat system, and
+`PlayerActivityChangeEvent` on the proxies). `LastSeen` formats presence for other UIs ("🟢 Online",
+"⚫ Last seen 3 days ago", "🟢 Bob — Playing BedWars Solo"). See
 [`api/README.md`](api/README.md) for setup, examples and the threading rules.
 
 ## How it works
@@ -141,7 +156,8 @@ platform (including a cancellable `FriendMessageEvent` to plug in your own chat 
 - Presence (online, server, status, activity) lives in memory and, with several proxies, in the Redis `<ns>:online`
   hash: a server switch evaluates `presence.rules` once and publishes one update only if something changed. Private
   messages are one pub/sub event, published straight away (not behind the SQL queue) and never stored.
-- Tables are `friends_players` and `friends_friendships`. Data from the old Bungee/Paper tables
+- Rate-limit and AFK-reply bookkeeping lives with each online player's cached data and goes away when they leave.
+- Tables are `friends_players`, `friends_friendships` and `friends_ignores`. Data from the old Bungee/Paper tables
   (`players`, `friends`, `requests`, `settings`) is not migrated.
 
 ## Tests

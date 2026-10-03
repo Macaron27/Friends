@@ -2,6 +2,7 @@ package com.friends.core;
 
 import java.time.Instant;
 
+import com.friends.api.PlayerActivity;
 import com.friends.api.Status;
 import com.friends.core.Storage.PlayerRow;
 
@@ -45,6 +46,12 @@ public interface Hooks {
     default boolean statusChanging(PlayerRow player, Status from, Status to) {
         return true;
     }
+
+    /**
+     * What a player on this proxy is doing changed (null: nothing a {@code presence.rules} rule knows): they joined,
+     * switched server or left.
+     */
+    default void activityChanged(PlayerRow player, PlayerActivity from, PlayerActivity to) {}
 
     Hooks NONE = new Hooks() {};
 }

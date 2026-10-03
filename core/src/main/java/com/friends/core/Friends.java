@@ -6,10 +6,12 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -51,15 +53,41 @@ public final class Friends implements Network.Listener {
     static final class Profile {
         final Audience audience;
         final Map<UUID, Friend> friends = new ConcurrentHashMap<>();
+        final Map<UUID, String> ignored = new ConcurrentHashMap<>(); // players they ignore: id -> name
         volatile boolean notifications;
         volatile Target replyTo; // who /r answers: the last private message sent or received (id and name)
+        // Rate limit and AFK auto-reply cooldowns live here, guarded by this profile: they go with it at disconnect.
+        // ponytail: no cache library needed, both are bounded (by the limit, and by one entry per friend).
+        private final ArrayDeque<Instant> sent = new ArrayDeque<>(); // their private messages within the window
+        private final Map<UUID, Instant> afkReplied = new HashMap<>(); // friend -> when their AFK reply was shown
 
         Profile(Audience audience, Storage.Loaded data) {
             this.audience = audience;
             this.notifications = data.notifications();
             data.friends().forEach(f -> friends.put(f.id(), f));
+            ignored.putAll(data.ignored());
+        }
+
+        /** Counts a private message sent {@code now}, or returns how long to wait if that would exceed {@code limit}. */
+        synchronized Duration send(Instant now, Settings.RateLimit limit) {
+            if (!limit.enabled()) return Duration.ZERO;
+            while (!sent.isEmpty() && !now.isBefore(sent.peekFirst().plus(limit.window()))) sent.pollFirst();
+            if (sent.size() >= limit.messages()) return Duration.between(now, sent.peekFirst().plus(limit.window()));
+            sent.addLast(now);
+            return Duration.ZERO;
+        }
+
+        /** Whether to show {@code friend}'s AFK auto-reply now: once per {@link #AFK_REPLY_EVERY} per friend. */
+        synchronized boolean afkReplyDue(UUID friend, Instant now) {
+            Instant last = afkReplied.get(friend);
+            if (last != null && now.isBefore(last.plus(AFK_REPLY_EVERY))) return false;
+            afkReplied.put(friend, now);
+            return true;
         }
     }
+
+    /** How often a sender sees the same AFK friend's auto-reply. */
+    static final Duration AFK_REPLY_EVERY = Duration.ofMinutes(5);
 
     private interface SqlCall<T> {
         T call() throws SQLException;
@@ -77,6 +105,7 @@ public final class Friends implements Network.Listener {
     private final Clock clock;
     private final Duration requestExpiry;
     private final int maxFriends;
+    private final Settings.RateLimit rateLimit;
     private final Activities activities;
     private final Hooks hooks;
     private final Executor async; // asks plugins (hooks) off the database thread
@@ -103,7 +132,8 @@ public final class Friends implements Network.Listener {
 
     /** {@code db} runs SQL in order, one task at a time; {@code async} runs whatever asks plugins (any threads). */
     public Friends(Storage storage, Platform platform, Network network, Executor db, Executor async, Clock clock,
-                   Duration requestExpiry, int maxFriends, Activities activities, Hooks hooks, Logger log) {
+                   Duration requestExpiry, int maxFriends, Settings.RateLimit rateLimit, Activities activities, Hooks hooks,
+                   Logger log) {
         this.storage = storage;
         this.platform = platform;
         this.network = network;
@@ -112,6 +142,7 @@ public final class Friends implements Network.Listener {
         this.clock = clock;
         this.requestExpiry = requestExpiry;
         this.maxFriends = maxFriends;
+        this.rateLimit = rateLimit;
         this.activities = activities;
         this.hooks = hooks;
         this.async = async;
@@ -216,7 +247,9 @@ public final class Friends implements Network.Listener {
                 // Delivered whatever this proxy thinks of the friendship: the sender's proxy checked it, and a
                 // Befriended published through its SQL queue may still be on its way here.
                 Profile p = profiles.get(to);
-                if (p == null) return; // on another proxy (or just left)
+                // On another proxy (or just left); or ignoring the sender, whose proxy may not have heard of it yet
+                // (the ignore removed them as friends, and that Unfriended event can still be on its way there).
+                if (p == null || p.ignored.containsKey(from.id())) return;
                 p.replyTo = new Target(from.id(), from.name());
                 Friend view = p.friends.get(from.id());
                 p.audience.sendMessage(Messages.messageFrom(view != null ? Messages.friendName(view) : Messages.name(from), from.name(), text));
@@ -281,7 +314,9 @@ public final class Friends implements Network.Listener {
             // Left (or was replaced by a newer session) while loading: don't resurrect a stale profile.
             if (platform.player(p.id()).filter(o -> o.audience() == p.audience()).isEmpty()) return completedFuture(null);
             profiles.put(p.id(), new Profile(p.audience(), data));
-            emit(new Event.Joined(p.id(), new Presence(p.name(), p.prefix(), proxy, p.server(), data.status(), activities.match(p.server()))));
+            PlayerActivity activity = activities.match(p.server());
+            emit(new Event.Joined(p.id(), new Presence(p.name(), p.prefix(), proxy, p.server(), data.status(), activity)));
+            if (activity != null) hooks.activityChanged(row(p), null, activity);
             return completedFuture(null);
         }
     }
@@ -295,7 +330,7 @@ public final class Friends implements Network.Listener {
     /**
      * Call after a server switch: friends network-wide see the new server and the activity {@code presence.rules}
      * derive from it (an {@link Event.Updated}, i.e. the Redis presence entry plus one publish). Nothing is published
-     * if neither changed.
+     * if neither changed; plugins hear of a new activity ({@link Hooks#activityChanged}).
      */
     public void moved(Online p) {
         PlayerActivity activity = activities.match(p.server()); // outside the lock: regexes
@@ -303,7 +338,9 @@ public final class Friends implements Network.Listener {
             Presence old = presence.get(p.id());
             if (!profiles.containsKey(p.id()) || old == null) return;
             Presence now = old.withServer(p.server(), activity);
-            if (!now.equals(old)) emit(new Event.Updated(p.id(), now));
+            if (now.equals(old)) return;
+            emit(new Event.Updated(p.id(), now));
+            if (!Objects.equals(old.activity(), activity)) hooks.activityChanged(row(p), old.activity(), activity);
         }
     }
 
@@ -313,8 +350,10 @@ public final class Friends implements Network.Listener {
             // Only the session that loaded the profile may drop it (kick-existing-players can reorder events).
             if (profile == null || profile.audience != p.audience() || !profiles.remove(p.id(), profile)) return;
             Instant now = clock.instant();
+            Presence was = presence.get(p.id());
             write(() -> storage.touch(p.id(), now));
             emit(new Event.Left(p.id(), proxy, now));
+            if (was != null && was.proxy().equals(proxy) && was.activity() != null) hooks.activityChanged(row(p), was.activity(), null);
         }
     }
 
@@ -362,9 +401,14 @@ public final class Friends implements Network.Listener {
         Profile me = profiles.get(s.id());
         if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
         if (target.is(s.id(), s.name())) return reply(s, Messages.addSelf(), Result.SELF);
-        return resolve(target).thenCompose(found -> found.isEmpty()
-                ? reply(s, Messages.notFound(target.label()), Result.PLAYER_NOT_FOUND)
-                : friendCount(found.get().id()).thenComposeAsync(count -> add(s, me, found.get(), count, false), async));
+        return resolve(target).thenCompose(found -> {
+            if (found.isEmpty()) return reply(s, Messages.notFound(target.label()), Result.PLAYER_NOT_FOUND);
+            PlayerRow t = found.get();
+            if (me.ignored.containsKey(t.id())) return reply(s, Messages.youIgnore(Messages.name(t), t.name()), Result.IGNORED);
+            return ignoring(t.id(), s.id()).thenCompose(ignored -> ignored
+                    ? reply(s, Messages.cantRequest(Messages.name(t)), Result.IGNORED)
+                    : friendCount(t.id()).thenComposeAsync(count -> add(s, me, t, count, false), async));
+        });
     }
 
     /** All checks and the send in one locked step, asking plugins in between ({@code vetted}: they agreed). */
@@ -372,6 +416,7 @@ public final class Friends implements Network.Listener {
         Request theirs;
         synchronized (lock) {
             Component targetName = Messages.name(target);
+            if (me.ignored.containsKey(target.id())) return reply(s, Messages.youIgnore(targetName, target.name()), Result.IGNORED); // meanwhile
             if (me.friends.containsKey(target.id())) return reply(s, Messages.alreadyFriends(targetName), Result.ALREADY_FRIENDS);
             theirs = valid(requests.get(new Request.Key(target.id(), s.id())));
             if (theirs == null) {
@@ -402,6 +447,8 @@ public final class Friends implements Network.Listener {
 
     private CompletableFuture<Result> accept(Online s, Profile me, Request r) {
         PlayerRow other = r.from();
+        // Ignoring drops their requests: one still here crossed the ignore on another proxy.
+        if (me.ignored.containsKey(other.id())) return reply(s, Messages.youIgnore(Messages.name(other), other.name()), Result.IGNORED);
         if (me.friends.size() >= maxFriends) return reply(s, Messages.limitSelf(maxFriends), Result.LIMIT_REACHED);
         return friendCount(other.id()).thenComposeAsync(count -> {
             if (count >= maxFriends) return reply(s, Messages.limitOther(Messages.name(other)), Result.TARGET_LIMIT_REACHED);
@@ -530,17 +577,25 @@ public final class Friends implements Network.Listener {
         if (f == null) return reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS);
         Presence p = visible(f.id());
         if (p == null) return reply(s, Messages.offline(Messages.friendName(f), f.lastSeen(), clock.instant()), Result.NOT_ONLINE);
+        // Counted before plugins are asked: a listener that cancels (to deliver it itself) is still spared the spam.
+        Duration wait = me.send(clock.instant(), rateLimit);
+        if (wait.isPositive()) return reply(s, Messages.tooFast(wait), Result.RATE_LIMITED);
         String sent = hooks.messaging(row(s), new PlayerRow(f.id(), p.name(), p.prefix(), f.lastSeen()), body);
         if (sent == null) return completedFuture(Result.CANCELLED);
         // Plugins were asked without the lock: check again that there is still someone to deliver to.
         if (!me.friends.containsKey(f.id())) return reply(s, Messages.notFriend(target.label()), Result.NOT_FRIENDS);
-        if (visible(f.id()) == null) return reply(s, Messages.offline(Messages.friendName(f), f.lastSeen(), clock.instant()), Result.NOT_ONLINE);
+        Presence now = visible(f.id());
+        if (now == null) return reply(s, Messages.offline(Messages.friendName(f), f.lastSeen(), clock.instant()), Result.NOT_ONLINE);
         me.replyTo = new Target(f.id(), f.name());
         s.audience().sendMessage(Messages.messageTo(Messages.friendName(f), f.name(), sent));
         Event event = new Event.PrivateMessage(row(s), f.id(), sent);
         apply(event); // delivers it if the friend is on this proxy
         // Straight to the network, not through the SQL queue like emit(): no write to wait for, and chat must not lag.
         if (network != Network.LOCAL) network.publish(event);
+        // Delivered all the same; the sender's own chat (also for API sends): it's the friend answering, not a reply.
+        if (now.status() == Status.AWAY && me.afkReplyDue(f.id(), clock.instant())) {
+            me.audience.sendMessage(Messages.afkReply(Messages.friendName(f), f.name()));
+        }
         return completedFuture(Result.SUCCESS);
     }
 
@@ -550,6 +605,62 @@ public final class Friends implements Network.Listener {
         if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
         Target to = me.replyTo;
         return to == null ? reply(s, Messages.nobodyToReply(), Result.INVALID_ARGUMENT) : message(s, to, text, "/r <message>");
+    }
+
+    /**
+     * {@code /f ignore <player>} (anyone who has joined): blocks their private messages and friend requests. Silently
+     * ends a friendship with them (neither side is told; plugins get {@link Hooks#unfriended}, but can't veto it) and
+     * drops pending requests either way. Saved in the database, which every proxy shares.
+     */
+    public CompletableFuture<Result> ignore(Online s, Target target) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        if (target.is(s.id(), s.name())) return reply(s, Messages.ignoreSelf(), Result.SELF);
+        return resolve(target).thenCompose(found -> found.isEmpty()
+                ? reply(s, Messages.notFound(target.label()), Result.PLAYER_NOT_FOUND)
+                : ignore(s, me, found.get()));
+    }
+
+    private CompletableFuture<Result> ignore(Online s, Profile me, PlayerRow target) {
+        PlayerRow mine = row(s);
+        synchronized (lock) {
+            Component name = Messages.name(target);
+            if (me.ignored.putIfAbsent(target.id(), target.name()) != null) return reply(s, Messages.alreadyIgnoring(name), Result.SUCCESS);
+            Instant now = clock.instant();
+            write(() -> storage.addIgnore(s.id(), target.id(), now));
+            Friend f = me.friends.get(target.id());
+            if (f != null) { // like /f remove, minus the veto and the reply
+                write(() -> storage.removeFriendships(s.id(), List.of(f.id())));
+                emit(new Event.Unfriended(s.id(), List.of(f.id())));
+                hooks.unfriended(mine, f);
+            }
+            for (Request.Key key : List.of(new Request.Key(target.id(), s.id()), new Request.Key(s.id(), target.id()))) {
+                if (requests.remove(key) != null) emit(new Event.RequestDenied(key.from(), key.to()));
+            }
+            return reply(s, Messages.ignored(name, f != null), Result.SUCCESS);
+        }
+    }
+
+    public CompletableFuture<Result> unignore(Online s, Target target) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        synchronized (lock) {
+            var entry = me.ignored.entrySet().stream().filter(e -> target.is(e.getKey(), e.getValue())).findFirst().orElse(null);
+            if (entry == null || !me.ignored.remove(entry.getKey(), entry.getValue())) {
+                return reply(s, Messages.notIgnoring(target.label()), Result.INVALID_ARGUMENT);
+            }
+            UUID id = entry.getKey();
+            write(() -> storage.removeIgnore(s.id(), id));
+            return reply(s, Messages.unignored(Messages.name(null, entry.getValue())), Result.SUCCESS);
+        }
+    }
+
+    /** {@code /f ignore} without a name. */
+    public CompletableFuture<Result> ignoreList(Online s) {
+        Profile me = profiles.get(s.id());
+        if (me == null) return reply(s, Messages.notLoaded(), Result.NOT_LOADED);
+        List<String> names = me.ignored.values().stream().sorted(String.CASE_INSENSITIVE_ORDER).toList();
+        return reply(s, Messages.ignoreList(names), Result.SUCCESS);
     }
 
     /** Online anywhere and not appearing offline, else null. */
@@ -604,6 +715,11 @@ public final class Friends implements Network.Listener {
     public List<String> onlineFriendNames(UUID id) {
         Profile p = profiles.get(id);
         return p == null ? List.of() : p.friends.values().stream().filter(f -> visible(f.id()) != null).map(Friend::name).toList();
+    }
+
+    public List<String> ignoredNames(UUID id) {
+        Profile p = profiles.get(id);
+        return p == null ? List.of() : List.copyOf(p.ignored.values());
     }
 
     public List<String> requesterNames(UUID id) {
@@ -726,6 +842,12 @@ public final class Friends implements Network.Listener {
             }
         }
         return db(() -> storage.player(name));
+    }
+
+    /** Whether {@code player} ignores {@code other}: from memory if {@code player} is loaded here, else the database. */
+    private CompletableFuture<Boolean> ignoring(UUID player, UUID other) {
+        Profile p = profiles.get(player);
+        return p != null ? completedFuture(p.ignored.containsKey(other)) : db(() -> storage.ignores(player, other));
     }
 
     private CompletableFuture<Integer> friendCount(UUID id) {

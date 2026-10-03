@@ -113,6 +113,12 @@ public final class FriendsApi implements FriendsAPI {
         return act(player, status, s -> friends.status(s, status));
     }
 
+    @Override
+    public CompletableFuture<Result> sendMessage(UUID sender, UUID receiver, String message) {
+        if (message == null) return completedFuture(Result.INVALID_ARGUMENT);
+        return act(sender, receiver, s -> friends.message(s, Target.of(receiver), message));
+    }
+
     /**
      * Runs {@code action} as {@code player}'s command, without the chat reply. The whole action runs on {@code async}
      * (never on the caller's thread, which may be the server thread events must not be fired from).

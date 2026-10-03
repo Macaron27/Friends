@@ -6,7 +6,8 @@ import net.md_5.bungee.api.plugin.Cancellable;
 
 /**
  * A player is about to remove a friend ({@code /f remove}, {@code /f removeall} or the API). Fired once per friend:
- * cancelling one keeps that friendship, the others in a {@code removeall} still go.
+ * cancelling one keeps that friendship, the others in a {@code removeall} still go. Not fired for {@code /f ignore},
+ * which always ends the friendship ({@link FriendRemovedEvent} still follows).
  *
  * <p>To react to the removal itself, listen to {@link FriendRemovedEvent}.
  */
