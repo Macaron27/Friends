@@ -1,6 +1,7 @@
 # Friends
 
-A Hypixel-style friends system for **Velocity**, **BungeeCord**, **Paper 1.8.8 → 26.3** and **Folia**, built for Java 25.
+A Hypixel-style friends system for **Velocity**, **BungeeCord**, **Paper 1.8.8 → 26.3** and **Folia**, built for Java 25,
+and for **[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin)** (the Rust server) as a WebAssembly plugin.
 
 Modules (one folder per part; a new platform gets its own top-level folder next to these):
 - `api/` — the API for other plugins (Java 8, no dependencies): interfaces, data models, events. Usage guide:
@@ -8,8 +9,9 @@ Modules (one folder per part; a new platform gets its own top-level folder next 
 - `core/` — platform-agnostic core: rules, cache, storage (SQLite/MySQL), messages, commands, multi-proxy network.
 - `paper/` — Paper and Folia, one jar for 1.8.8 to 26.x.
 - `bungee/`, `velocity/` — proxy plugins (thin glue). Both support multi-proxy networks through Redis, even mixed.
+- `PumpkinMC/` — the Pumpkin plugin, in Rust: the core ported (same config.yml, tables and messages) plus Pumpkin glue.
+  Built with Cargo, not Gradle: [`PumpkinMC/README.md`](PumpkinMC/README.md).
 - `builds/` — the jars to ship, written by every build (not in git).
-- `tools/e2e` — end-to-end tests on real servers with bot players; `tools/e2e/probe` is a test plugin using the API.
 
 ## Build
 
@@ -17,12 +19,14 @@ Modules (one folder per part; a new platform gets its own top-level folder next 
 ./gradlew build   # tests, then builds/friends-paper.jar, friends-velocity.jar, friends-bungee.jar, friends-api.jar
 ```
 
+The Pumpkin plugin: `cargo plugin` in `PumpkinMC/` (see its README) builds `friends_pumpkin.wasm`.
+
 Or download the jars from the [GitHub releases](https://github.com/Macaron27/Friends/releases) (each release builds and
-attaches them). Put the jar for your platform in `plugins/`. Every server/proxy must run **Java 25** (Velocity 4.2 and Paper 26.x
+attaches them, and `friends-pumpkin.wasm`). Put the jar for your platform in `plugins/`. Every server/proxy must run **Java 25** (Velocity 4.2 and Paper 26.x
 require it anyway; older Paper versions run on it, see below). Add `--enable-native-access=ALL-UNNAMED` to the JVM
 flags to silence the JDK warning about SQLite's native library.
 
-## Compatibility (tested on real servers, see `tools/e2e`)
+## Compatibility (tested on real servers with bot players)
 
 | Platform | Tested | Notes |
 |---|---|---|
@@ -31,6 +35,7 @@ flags to silence the JDK warning about SQLite's native library.
 | BungeeCord 26.1 (build 2100) | players on 1.8.8 and 26.3 backends | |
 | Velocity 4.2.0 | players on 1.8.8 and 26.3 backends | |
 | BungeeCord + Velocity sharing MySQL + Redis | cross-proxy friend flow | |
+| Pumpkin nightly 2026-11-06 (26.3) | full friend flow with bot players, SQLite and MySQL; API over IPC | `friends_pumpkin.wasm` in `plugins/`; see [`PumpkinMC/README.md`](PumpkinMC/README.md) for what differs |
 
 Versions in between use the same APIs; they were not all run. On old Paper the plugin uses the server's own
 SQLite driver: Paper 1.12.2's has no Apple Silicon build (Linux x86_64/ARM are fine), use MySQL there.
@@ -75,9 +80,10 @@ Private messages (friends only, network-wide; turn off with `private-messages.en
 ```
 
 Permission `friends.use`: on by default on Paper; on Velocity allowed unless explicitly false; BungeeCord has no
-permission check (no permission defaults there).
+permission check (no permission defaults there). On Pumpkin it is `friends:use` (allowed by default): Pumpkin
+namespaces plugin permissions.
 
-## Config (`plugins/Friends/config.yml`, `plugins/friends/` on Velocity)
+## Config (`plugins/Friends/config.yml`, `plugins/friends/` on Velocity, `plugins/data/friends/` on Pumpkin)
 
 The same file on every platform: `storage.type` `sqlite` or `mysql` (MySQL/MariaDB), `request-expiry-minutes`
 (default 5), `max-friends` (default 5000), the `redis` section (proxies only; ignored on Paper),
@@ -174,4 +180,5 @@ Add `-Dfriends.mysql=host:port/db:user:password` and/or `-Dfriends.redis=host:po
 real-Redis suites (throwaway tables/key namespaces). The `paper` module runs the real plugin wiring on MockBukkit
 against the shipped implementation jar, and the proxies' events are tested on their own event APIs.
 
-End-to-end on real servers: see [`tools/e2e/README.md`](tools/e2e/README.md).
+End-to-end tests on real servers with bot players (`tools/e2e`, with `tools/e2e/probe`, a test plugin using the API)
+are kept locally too: they are not in the repository, and Gradle builds the probe only where that folder exists.

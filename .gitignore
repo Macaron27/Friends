@@ -21,6 +21,9 @@ CLAUDE.local.md
 
 # Tests stay local (not published)
 **/src/test/
+PumpkinMC/*/tests/
+# End-to-end tools (bot players, real servers, the API probe plugin) stay local too
+tools/e2e/
 __pycache__/
 *.pyc
 

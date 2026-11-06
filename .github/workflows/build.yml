@@ -21,3 +21,30 @@ jobs:
       # Test sources stay local (not in the repository): this compiles everything and checks the shipped jars.
       # The jars themselves are attached to GitHub releases (release.yml), not to PR or push runs.
       - run: ./gradlew build
+
+  # The Pumpkin plugin (PumpkinMC/): a WebAssembly build. Its tests stay local too; this checks it builds cleanly.
+  pumpkin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: PumpkinMC
+    env:
+      WASI_SDK: "34"
+    steps:
+      - uses: actions/checkout@v7
+      # rust-toolchain.toml pins the compiler, the wasm32-wasip2 target, clippy and rustfmt.
+      - run: rustup toolchain install
+      # SQLite is compiled from source: for WebAssembly that takes wasi-sdk's clang and WASI sysroot.
+      - name: wasi-sdk
+        run: |
+          curl -fsSL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK}/wasi-sdk-${WASI_SDK}.0-x86_64-linux.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/wasi-sdk-${WASI_SDK}.0-x86_64-linux"
+          {
+            echo "WASI_SDK_PATH=$sdk"
+            echo "CC_wasm32_wasip2=$sdk/bin/clang"
+            echo "AR_wasm32_wasip2=$sdk/bin/llvm-ar"
+            echo "CFLAGS_wasm32_wasip2=--sysroot=$sdk/share/wasi-sysroot"
+          } >> "$GITHUB_ENV"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets --target wasm32-wasip2 -- -D warnings
+      - run: cargo plugin --locked
