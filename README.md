@@ -9,7 +9,6 @@ Modules (one folder per part; a new platform gets its own top-level folder next 
 - `paper/` — Paper and Folia, one jar for 1.8.8 to 26.x.
 - `bungee/`, `velocity/` — proxy plugins (thin glue). Both support multi-proxy networks through Redis, even mixed.
 - `builds/` — the jars to ship, written by every build (not in git).
-- `tools/e2e` — end-to-end tests on real servers with bot players; `tools/e2e/probe` is a test plugin using the API.
 
 ## Build
 
@@ -22,7 +21,7 @@ attaches them). Put the jar for your platform in `plugins/`. Every server/proxy 
 require it anyway; older Paper versions run on it, see below). Add `--enable-native-access=ALL-UNNAMED` to the JVM
 flags to silence the JDK warning about SQLite's native library.
 
-## Compatibility (tested on real servers, see `tools/e2e`)
+## Compatibility (tested on real servers with bot players)
 
 | Platform | Tested | Notes |
 |---|---|---|
@@ -174,4 +173,5 @@ Add `-Dfriends.mysql=host:port/db:user:password` and/or `-Dfriends.redis=host:po
 real-Redis suites (throwaway tables/key namespaces). The `paper` module runs the real plugin wiring on MockBukkit
 against the shipped implementation jar, and the proxies' events are tested on their own event APIs.
 
-End-to-end on real servers: see [`tools/e2e/README.md`](tools/e2e/README.md).
+End-to-end tests on real servers with bot players (`tools/e2e`, with `tools/e2e/probe`, a test plugin using the API)
+are kept locally too: they are not in the repository, and Gradle builds the probe only where that folder exists.
