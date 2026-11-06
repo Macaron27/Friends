@@ -1,0 +1,37 @@
+# Friends for Pumpkin (https://github.com/Pumpkin-MC/Pumpkin): the Paper plugin's behaviour as a WebAssembly
+# plugin. `core` is the platform-agnostic port of com.friends.core; `plugin` is the Pumpkin glue that builds the
+# .wasm file. Build: `cargo plugin` (alias below); test: `cargo test -p friends-core`.
+[workspace]
+resolver = "3"
+members = ["core", "plugin", "tools/probe"]
+
+[workspace.package]
+# Keep in step with build.gradle.kts: the release workflow checks both against the tag.
+version = "0.7.0"
+edition = "2024"
+rust-version = "1.99"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Macaron27/Friends"
+
+[workspace.dependencies]
+friends-core = { path = "core" }
+# Pumpkin's plugin SDK (WIT API v0.1, what release servers load). The crates.io release lags the server, so this
+# follows the version Pumpkin's own master builds with.
+pumpkin-plugin-api = "0.2.1"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+uuid = { version = "1", default-features = false, features = ["std"] }
+regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl", "unicode-gencat"] }
+yaml-rust2 = { version = "0.13", default-features = false }
+serde_json = "1"
+# SQLite is compiled from source (bundled); for wasm32-wasip2 that needs a WASI C toolchain (tools/dev.Dockerfile).
+rusqlite = { version = "0.41", features = ["bundled"] }
+# MySQL protocol types; the client itself is core/src/storage/mysql_wire.rs.
+mysql_common = { version = "0.37", default-features = false }
+# mysql_common's compression dependency needs a backend picked; pure Rust works on every target.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = "debuginfo"

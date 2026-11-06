@@ -1,0 +1,17 @@
+[package]
+name = "friends-core"
+description = "Friends' platform-agnostic core: rules, cache, storage (SQLite/MySQL), messages and commands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tracing.workspace = true
+uuid.workspace = true
+regex.workspace = true
+yaml-rust2.workspace = true
+rusqlite.workspace = true
+mysql_common.workspace = true
+flate2.workspace = true

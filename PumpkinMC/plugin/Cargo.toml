@@ -1,0 +1,18 @@
+[package]
+name = "friends-pumpkin"
+description = "Hypixel-style friends system for Pumpkin servers (WebAssembly plugin)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+friends-core.workspace = true
+pumpkin-plugin-api.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+serde_json.workspace = true

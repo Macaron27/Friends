@@ -1,6 +1,6 @@
 name: release
 
-# Publishing a GitHub release builds its tag and attaches the jars from builds/ to that release.
+# Publishing a GitHub release builds its tag and attaches the jars from builds/ (and the Pumpkin plugin) to that release.
 on:
   release:
     types: [published]
@@ -24,6 +24,37 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
       - run: ./gradlew build
       - run: gh release upload "$TAG" builds/*.jar --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+
+  pumpkin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: PumpkinMC
+    env:
+      WASI_SDK: "34"
+    steps:
+      - uses: actions/checkout@v7
+      # Same check for the Pumpkin plugin's version (PumpkinMC/Cargo.toml).
+      - run: 'grep -q "^version = \"${TAG#v}\"" Cargo.toml || { echo "tag $TAG does not match PumpkinMC/Cargo.toml"; exit 1; }'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+      - run: rustup toolchain install
+      - name: wasi-sdk
+        run: |
+          curl -fsSL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK}/wasi-sdk-${WASI_SDK}.0-x86_64-linux.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/wasi-sdk-${WASI_SDK}.0-x86_64-linux"
+          {
+            echo "WASI_SDK_PATH=$sdk"
+            echo "CC_wasm32_wasip2=$sdk/bin/clang"
+            echo "AR_wasm32_wasip2=$sdk/bin/llvm-ar"
+            echo "CFLAGS_wasm32_wasip2=--sysroot=$sdk/share/wasi-sysroot"
+          } >> "$GITHUB_ENV"
+      - run: cargo plugin --locked
+      - run: cp target/wasm32-wasip2/release/friends_pumpkin.wasm friends-pumpkin.wasm
+      - run: gh release upload "$TAG" friends-pumpkin.wasm --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
