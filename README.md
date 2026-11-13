@@ -1,30 +1,115 @@
 # Friends
 
-A Hypixel-style friends system for **Velocity**, **BungeeCord**, **Paper 1.8.8 → 26.3** and **Folia**, built for Java 25,
-and for **[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin)** (the Rust server) as a WebAssembly plugin.
+A Hypixel-style friends system for Minecraft servers and networks: friend requests, a friend list that shows who is
+online and what they are playing, best friends, nicknames, statuses, private messages between friends and ignore
+lists. It runs on **Velocity**, **BungeeCord**, **Paper 1.8.8 → 26.3** and **Folia** (Java 25), and on
+**[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin)** (the Rust server) as a WebAssembly plugin. On a network it goes
+on the proxy and covers every backend server; several proxies can share it through MySQL and Redis.
 
-Modules (one folder per part; a new platform gets its own top-level folder next to these):
-- `api/` — the API for other plugins (Java 8, no dependencies): interfaces, data models, events. Usage guide:
-  [`api/README.md`](api/README.md).
-- `core/` — platform-agnostic core: rules, cache, storage (SQLite/MySQL), messages, commands, multi-proxy network.
-- `paper/` — Paper and Folia, one jar for 1.8.8 to 26.x.
-- `bungee/`, `velocity/` — proxy plugins (thin glue). Both support multi-proxy networks through Redis, even mixed.
-- `PumpkinMC/` — the Pumpkin plugin, in Rust: the core ported (same config.yml, tables and messages) plus Pumpkin glue.
-  Built with Cargo, not Gradle: [`PumpkinMC/README.md`](PumpkinMC/README.md).
-- `builds/` — the jars to ship, written by every build (not in git).
+[Version](#version) · [Install on Velocity](#install-on-velocity) · [Config example](#config-example) ·
+[Other platforms](#other-platforms) · [Commands](#commands) · [Upgrading](#upgrading) · [Changelog](CHANGELOG.md)
 
-## Build
+## Version
 
-```bash
-./gradlew build   # tests, then builds/friends-paper.jar, friends-velocity.jar, friends-bungee.jar, friends-api.jar
+The current version is **0.7.0**. [`CHANGELOG.md`](CHANGELOG.md) lists what each version added.
+
+> [!WARNING]
+> The release named **"Friends Release (1.0.0)" holds version 0.5.0**: its jars were built before 0.6.0 and report
+> version 0.5.0. They have no private messages (`/msg`, `/r`), ignore lists, presence rules or last-seen display, and
+> there is no Pumpkin plugin in it. Until a 0.7.0 release is published, [build the jars](#build) to get those.
+
+## Install on Velocity
+
+Friends runs on the proxy only: the backend servers need nothing. Use it either on the proxies or on standalone Paper
+servers, not both.
+
+1. **Requirements:** Velocity on **Java 25** (tested on Velocity 4.2.0). Optional: LuckPerms on the proxy, for rank
+   prefixes before player names in Friends' messages.
+2. **Get `friends-velocity.jar`** from the [GitHub releases](https://github.com/Macaron27/Friends/releases) (read
+   [Version](#version) first), or build it with `./gradlew build` (it lands in `builds/`).
+3. **Put it in the proxy's `plugins/` folder.** Optionally add `--enable-native-access=ALL-UNNAMED` to the proxy's JVM
+   flags: it silences the JDK warning about SQLite's native library.
+4. **Start the proxy.** Friends writes `plugins/friends/config.yml` and, with the default SQLite storage, the database
+   `plugins/friends/friends.db`. The log then shows:
+
+   ```
+   Friends: 0 presence rule(s); private messages on /msg and /r (rate limit: 3 per 3s)
+   Friends enabled (proxy id: local)
+   ```
+
+   If Friends can't start (for example an unknown `storage.type`, or MySQL or Redis unreachable), the log shows
+   `Friends is disabled: <reason>` instead. The proxy keeps running, without the Friends commands.
+5. **Join and type `/f`** to see the commands. Every player can use them unless the permission `friends.use` is
+   explicitly set to false (for example with LuckPerms).
+
+The defaults work for a single proxy, so nothing has to be edited. To change a setting, edit
+`plugins/friends/config.yml` and restart the proxy: there is no reload command.
+
+## Config example
+
+The same `config.yml` and keys on every platform. It lives in `plugins/friends/` on Velocity, `plugins/Friends/` on
+BungeeCord and Paper, and `plugins/data/friends/` on Pumpkin. The file written on first start explains every setting
+in its comments; the default is [`core/src/main/resources/config.yml`](core/src/main/resources/config.yml).
+
+Example: two Velocity proxies sharing one MySQL database and one Redis, with game names taken from the server names.
+The second proxy uses the same file with `proxy-id: "proxy-2"`.
+
+```yaml
+storage:
+  type: mysql             # sqlite (the default) is enough for a single proxy
+
+sqlite:
+  file: friends.db        # only used with storage.type: sqlite
+
+mysql:                    # MySQL or MariaDB, the same database on every proxy
+  host: db.example.internal
+  port: 3306
+  database: friends
+  user: friends
+  password: "change-me"
+  use-ssl: false
+
+request-expiry-minutes: 5 # pending friend requests expire after this
+max-friends: 5000
+
+redis:                    # only for several proxies; needs storage.type: mysql
+  enabled: true
+  host: redis.example.internal
+  port: 6379
+  password: ""
+  database: 0
+  ssl: false
+  proxy-id: "proxy-1"     # unique per proxy and stable across restarts
+  namespace: friends
+
+private-messages:
+  enabled: true           # false if another plugin provides /msg and /r
+  rate-limit:             # at most 3 messages per 3 seconds per player; 0 turns it off
+    messages: 3
+    seconds: 3
+
+presence:                 # proxies only: "Playing BedWars Solo" in /f list
+  rules:                  # first match wins; each pattern must match the whole server name, ignoring case
+    - pattern: "BW.1S.*"
+      game: "BedWars"
+      mode: "Solo"
+    - pattern: "SW.*"
+      game: "SkyWars"     # mode is optional: "Playing SkyWars"
 ```
 
-The Pumpkin plugin: `cargo plugin` in `PumpkinMC/` (see its README) builds `friends_pumpkin.wasm`.
+On one proxy with SQLite, keep `storage.type: sqlite` and `redis.enabled: false` (the defaults). The startup log then
+says `proxy id: local`.
 
-Or download the jars from the [GitHub releases](https://github.com/Macaron27/Friends/releases) (each release builds and
-attaches them, and `friends-pumpkin.wasm`). Put the jar for your platform in `plugins/`. Every server/proxy must run **Java 25** (Velocity 4.2 and Paper 26.x
-require it anyway; older Paper versions run on it, see below). Add `--enable-native-access=ALL-UNNAMED` to the JVM
-flags to silence the JDK warning about SQLite's native library.
+## Other platforms
+
+| Platform | File | Config folder | Notes |
+|---|---|---|---|
+| BungeeCord | `friends-bungee.jar` in the proxy's `plugins/` | `plugins/Friends/` | Same steps as Velocity. No permission check. |
+| Paper, Folia | `friends-paper.jar` in `plugins/` | `plugins/Friends/` | Standalone servers only (not behind a proxy that runs Friends). `redis` and `presence` are ignored. |
+| Pumpkin | `friends-pumpkin.wasm` in `plugins/` | `plugins/data/friends/` | Not in a release yet: build it. Install and differences: [`PumpkinMC/README.md`](PumpkinMC/README.md). |
+
+The jars come from the [GitHub releases](https://github.com/Macaron27/Friends/releases) or from `./gradlew build`
+(in `builds/`); every server and proxy needs **Java 25**.
 
 ## Compatibility (tested on real servers with bot players)
 
@@ -37,8 +122,9 @@ flags to silence the JDK warning about SQLite's native library.
 | BungeeCord + Velocity sharing MySQL + Redis | cross-proxy friend flow | |
 | Pumpkin nightly 2026-11-06 (26.3) | full friend flow with bot players, SQLite and MySQL; API over IPC | `friends_pumpkin.wasm` in `plugins/`; see [`PumpkinMC/README.md`](PumpkinMC/README.md) for what differs |
 
-Versions in between use the same APIs; they were not all run. On old Paper the plugin uses the server's own
-SQLite driver: Paper 1.12.2's has no Apple Silicon build (Linux x86_64/ARM are fine), use MySQL there.
+Versions in between use the same APIs; they were not all run. Velocity 4.2 and Paper 26.x need Java 25 anyway; older
+Paper versions run on it (see the notes above). On old Paper the plugin uses the server's own SQLite driver: Paper
+1.12.2's has no Apple Silicon build (Linux x86_64/ARM are fine), use MySQL there.
 
 ## Commands
 
@@ -83,7 +169,7 @@ Permission `friends.use`: on by default on Paper; on Velocity allowed unless exp
 permission check (no permission defaults there). On Pumpkin it is `friends:use` (allowed by default): Pumpkin
 namespaces plugin permissions.
 
-## Config (`plugins/Friends/config.yml`, `plugins/friends/` on Velocity, `plugins/data/friends/` on Pumpkin)
+## Config reference
 
 The same file on every platform: `storage.type` `sqlite` or `mysql` (MySQL/MariaDB), `request-expiry-minutes`
 (default 5), `max-friends` (default 5000), the `redis` section (proxies only; ignored on Paper),
@@ -111,6 +197,8 @@ Replace the jar and restart: no database migration (new tables are created at st
 the config is added to your `config.yml` with its comments at startup: new sections at the end (0.6.0:
 `private-messages` and `presence`), new keys at the end of their section, indented like yours (0.7.0:
 `private-messages.rate-limit`). Nothing you wrote is changed; the startup log lists what was added.
+
+Coming from the jars of the "1.0.0" release (version 0.5.0), both the 0.6.0 and the 0.7.0 notes below apply.
 
 - **0.7.0 adds `/f ignore`, `/f unignore`, the message rate limit and AFK auto-replies.** Ignore lists live in a new
   `friends_ignores` table. On a multi-proxy network, upgrade every proxy: a proxy still on 0.6.0 doesn't check ignore
@@ -143,6 +231,28 @@ events on every platform (including a cancellable `FriendMessageEvent` to plug i
 `PlayerActivityChangeEvent` on the proxies). `LastSeen` formats presence for other UIs ("🟢 Online",
 "⚫ Last seen 3 days ago", "🟢 Bob — Playing BedWars Solo"). See
 [`api/README.md`](api/README.md) for setup, examples and the threading rules.
+
+## Build
+
+```bash
+./gradlew build   # tests, then builds/friends-paper.jar, friends-velocity.jar, friends-bungee.jar, friends-api.jar
+```
+
+The Pumpkin plugin: `cargo plugin` in `PumpkinMC/` (see its README) builds `friends_pumpkin.wasm`.
+
+Publishing a GitHub release builds its tag and attaches the four jars and `friends-pumpkin.wasm` to it. The tag must
+be the project version (`build.gradle.kts` and `PumpkinMC/Cargo.toml`, e.g. `0.7.0` or `v0.7.0`), or the workflow
+stops before building.
+
+Modules (one folder per part; a new platform gets its own top-level folder next to these):
+- `api/` — the API for other plugins (Java 8, no dependencies): interfaces, data models, events. Usage guide:
+  [`api/README.md`](api/README.md).
+- `core/` — platform-agnostic core: rules, cache, storage (SQLite/MySQL), messages, commands, multi-proxy network.
+- `paper/` — Paper and Folia, one jar for 1.8.8 to 26.x.
+- `bungee/`, `velocity/` — proxy plugins (thin glue). Both support multi-proxy networks through Redis, even mixed.
+- `PumpkinMC/` — the Pumpkin plugin, in Rust: the core ported (same config.yml, tables and messages) plus Pumpkin glue.
+  Built with Cargo, not Gradle: [`PumpkinMC/README.md`](PumpkinMC/README.md).
+- `builds/` — the jars to ship, written by every build (not in git).
 
 ## How it works
 
